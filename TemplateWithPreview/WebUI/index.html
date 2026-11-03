@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Preview Text Preset</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="input-row">
+            <label for="previewTextInput">プレビュー文字列:</label>
+            <input type="text" id="previewTextInput" value="あA" placeholder="任意の文字列を入力...">
+            <button class="btn" id="refreshBtn" title="プレビューを更新">更新</button>
+            <button class="btn primary" id="addPresetBtn" title="選択中のテキストアイテムから新規登録">＋ 登録</button>
+        </div>
+        <div class="categories-bar">
+            <div class="category-tabs" id="categoryTabs">
+                <button class="tab-btn active" data-category="すべて">すべて</button>
+                <button class="tab-btn" data-category="基本">基本</button>
+                <button class="tab-btn" data-category="テロップ">テロップ</button>
+                <button class="tab-btn" data-category="装飾">装飾</button>
+            </div>
+            <div class="import-export">
+                <button class="btn" id="importBtn" style="padding: 4px 8px; font-size: 11px;">インポート</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="grid-container" id="presetGrid">
+        <!-- プリセットカードが動的に挿入されます -->
+    </main>
+
+    <!-- 右クリックメニュー -->
+    <div class="context-menu" id="contextMenu">
+        <div class="context-menu-item" data-action="apply">適用 (左クリック)</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="apply-effect">エフェクトのみ適用</div>
+        <div class="context-menu-item" data-action="apply-font">フォントのみ適用</div>
+        <div class="context-menu-item" data-action="apply-position">位置のみ適用</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="duplicate">複製</div>
+        <div class="context-menu-item" data-action="rename">名前を変更</div>
+        <div class="context-menu-item" data-action="export">エクスポート</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item danger" data-action="delete">削除</div>
+    </div>
+
+    <!-- 通知トースト -->
+    <div class="toast" id="toast"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
