@@ -63,8 +63,6 @@ public partial class CreatePresetDialog : Window
         _isEditMode = editPattern != null;
         _selectedItemCount = selectedItemCount;
         AutoColorStartEffectSlider.Value = Math.Clamp(autoColorStartEffect, 0, 10);
-        AutoColorStartEffectValue.Text = AutoColorStartEffect.ToString();
-        AutoColorStartEffectSlider.ValueChanged += (_, _) => AutoColorStartEffectValue.Text = AutoColorStartEffect.ToString();
         CsvInputButtons.Populate(CategoryQuickButtons, _existingPresets.SelectMany(p => p.GetCategoryList()), value => CsvInputButtons.Append(TextCategory, value));
         CsvInputButtons.Populate(TagQuickButtons, _existingPresets.SelectMany(p => p.GetTagList()), value => CsvInputButtons.Append(TextTags, value));
 
@@ -97,6 +95,7 @@ public partial class CreatePresetDialog : Window
             }
             ComboTargetTemplate.SelectedItem = parent;
             PanelNewName.Visibility = Visibility.Collapsed;
+            PanelTags.Visibility = Visibility.Collapsed;
             TextCategory.Text = targetPreset.Category;
             TextTags.Text = targetPreset.Tags;
 
@@ -173,6 +172,7 @@ public partial class CreatePresetDialog : Window
         if (IsNewPreset)
         {
             PanelNewName.Visibility = Visibility.Visible;
+            PanelTags.Visibility = Visibility.Visible;
             TextPatternCountInfo.Visibility = Visibility.Collapsed;
             TargetPreset = null;
             TextTags.Text = "";
@@ -180,6 +180,7 @@ public partial class CreatePresetDialog : Window
         else
         {
             PanelNewName.Visibility = Visibility.Collapsed;
+            PanelTags.Visibility = Visibility.Collapsed;
             TargetPreset = (ComboTargetTemplate.SelectedItem as TemplateComboItem)?.Preset;
             if (TargetPreset != null)
             {

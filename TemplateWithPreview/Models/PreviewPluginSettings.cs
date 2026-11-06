@@ -23,4 +23,10 @@ public sealed class PreviewPluginSettings
     public bool ApplyOthersTarget { get; set; } = true;
     public bool LibraryMonitorEnabled { get; set; }
     public List<string> LibraryWatchFolders { get; set; } = new();
+    public Dictionary<string, List<string>> LibraryWatchFoldersByType { get; set; } = new();
+    public Dictionary<string, List<string>> LibraryCategories { get; set; } = new();
+    public Dictionary<string, double> LibraryDefaultVolumeDb { get; set; } = new();
+    public Dictionary<string, double> LibraryDefaultVolumePercent { get; set; } = new();
+    public bool LibraryAutoNormalizeVolume { get; set; }
+    public double LibraryAutoNormalizeTargetPercent { get; set; } = 100;
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Globalization;
@@ -18,38 +19,52 @@ namespace TemplateWithPreview;
 internal sealed class ItemTemplatePresetDialog : Window
 {
     private readonly TextBox _name = new();
+    private readonly ComboBox _targetCombo = new() { MinHeight = 26 };
     private readonly TextBox _category = new();
     private readonly TextBox _tags = new();
     private readonly ColorPicker _colorPicker = new() { Value = Colors.White, Width = 90, Height = 28 };
     private readonly CheckBox _generate = new() { Content = "プレビューを生成 (アイテム尺、最大15秒)", IsChecked = true };
-    private readonly Slider _thumbTime = new() { Minimum = 0, Maximum = 15, TickFrequency = 0.1, IsSnapToTickEnabled = false };
-    private readonly TextBox _timeInput = new() { Width = 54, Padding = new Thickness(4, 2, 4, 2), VerticalContentAlignment = VerticalAlignment.Center, Text = "0.0" };
+    private readonly TextBoxSlider _thumbTime = new() { Min = 0, Max = 15, DefaultMin = 0, DefaultMax = 15, Unit = "", IsUnitVisible = false, StringFormat = "F1", Delta = 0.1 };
     private readonly Slider _videoSeek = new() { Minimum = 0, Maximum = 0, IsEnabled = false, Margin = new Thickness(0, 4, 0, 0) };
     private readonly Image _thumbnail = new() { Stretch = Stretch.Uniform };
     private readonly MediaElement _video = new() { LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Stop, Stretch = Stretch.Uniform, IsMuted = false, Visibility = Visibility.Collapsed };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 6) };
     private readonly Button _previewButton;
     private readonly IReadOnlyList<IItem> _items;
+    private readonly List<CheckBox> _itemChecks = new();
     private readonly List<string> _temporaryFiles = new();
     private readonly DispatcherTimer _thumbnailRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _videoPositionTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
-    private bool _updatingThumbnailTime;
     private bool _updatingVideoSeek;
     private bool _draggingVideoSeek;
+    private readonly IReadOnlyList<TextPreset> _existingTemplates;
+    private readonly TextPreset? _initialTarget;
+
+    private sealed class TemplateChoice
+    {
+        public TextPreset? Preset { get; }
+        public string Label { get; }
+        public TemplateChoice(TextPreset? preset, string label) { Preset = preset; Label = label; }
+        public override string ToString() => Label;
+    }
 
     public string PresetName => _name.Text.Trim();
+    public TextPreset? TargetPreset => (_targetCombo.SelectedItem as TemplateChoice)?.Preset;
     public string Category => _category.Text.Trim();
     public string Tags => string.Join(", ", _tags.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase));
     public string SampleColorHex => $"#{_colorPicker.Value.R:X2}{_colorPicker.Value.G:X2}{_colorPicker.Value.B:X2}";
     public double ThumbnailTimeSeconds => _thumbTime.Value;
     public bool GeneratePreview => _generate.IsChecked == true;
+    public IReadOnlyList<IItem> SelectedItems => _itemChecks.Where(check => check.IsChecked == true).Select(check => (IItem)check.Tag!).ToList();
     public string? PreviewVideoPath { get; private set; }
     public double PreviewVideoDurationSeconds { get; private set; }
     public BitmapSource? PreviewImage { get; private set; }
 
-    public ItemTemplatePresetDialog(string name, string category, string sampleColor, IReadOnlyList<IItem> items, string tags = "", IEnumerable<string>? categories = null, IEnumerable<string>? tagValues = null)
+    public ItemTemplatePresetDialog(string name, string category, string sampleColor, IReadOnlyList<IItem> items, string tags = "", IEnumerable<string>? categories = null, IEnumerable<string>? tagValues = null, IEnumerable<TextPreset>? existingTemplates = null, TextPreset? targetPreset = null)
     {
         _items = items;
+        _existingTemplates = (existingTemplates ?? Array.Empty<TextPreset>()).ToList();
+        _initialTarget = targetPreset;
         Title = "テンプレートプリセットの登録 / パターン設定";
         Width = 660;
         Height = 720;
@@ -58,6 +73,7 @@ internal sealed class ItemTemplatePresetDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ResizeMode = ResizeMode.CanResize;
         Owner = Application.Current?.MainWindow;
+        Style = Application.Current?.TryFindResource(typeof(Window)) as System.Windows.Style;
         _name.Text = name;
         _category.Text = category;
         _tags.Text = tags;
@@ -71,9 +87,14 @@ internal sealed class ItemTemplatePresetDialog : Window
         var save = new Button { Content = "保存", IsDefault = true, Padding = new Thickness(18, 4, 18, 4) };
         save.Click += (_, _) =>
         {
-            if (string.IsNullOrWhiteSpace(PresetName))
+            if (TargetPreset == null && string.IsNullOrWhiteSpace(PresetName))
             {
                 MessageBox.Show(this, "テンプレート名を入力してください。", "名前未入力", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            if (_itemChecks.All(check => check.IsChecked != true))
+            {
+                MessageBox.Show(this, "登録するアイテムを1つ以上選択してください。", "アイテム未選択", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             DialogResult = true;
@@ -83,23 +104,71 @@ internal sealed class ItemTemplatePresetDialog : Window
         root.Children.Add(footer);
 
         var content = new StackPanel();
-        content.Children.Add(new TextBlock { Text = "テンプレート情報", Margin = new Thickness(0, 0, 0, 4), FontWeight = FontWeights.SemiBold });
-        content.Children.Add(Labeled("テンプレート名", _name));
-        content.Children.Add(Labeled("カテゴリ", _category));
-        var categoryQuickButtons = new WrapPanel { Margin = new Thickness(90, -6, 0, 3) };
-        CsvInputButtons.Populate(categoryQuickButtons, categories ?? Array.Empty<string>(), value => CsvInputButtons.Append(_category, value));
-        content.Children.Add(categoryQuickButtons);
-        content.Children.Add(Labeled("タグ (カンマ区切り)", _tags));
+        var targetGroup = new GroupBox { Header = _initialTarget == null ? "登録先" : "親テンプレート", Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(10) };
+        var targetContent = new StackPanel();
+        targetContent.Children.Add(new TextBlock { Text = _initialTarget == null ? "新規テンプレートまたは既存テンプレートへのパターン追加" : "このパターンを所属させる親テンプレート", Margin = new Thickness(0, 0, 0, 4), Opacity = 0.8 });
+        _targetCombo.Items.Add(new TemplateChoice(null, "[＋ 新規テンプレートを作成]"));
+        foreach (var preset in _existingTemplates.OrderBy(p => p.Name))
+            _targetCombo.Items.Add(new TemplateChoice(preset, $"[TPL] {preset.Name} ({preset.Patterns.Count}パターン)"));
+        _targetCombo.SelectedIndex = _initialTarget == null ? 0 : Math.Max(0, _targetCombo.Items.Cast<TemplateChoice>().ToList().FindIndex(x => x.Preset?.Id == _initialTarget.Id));
+        targetContent.Children.Add(_targetCombo);
+        var metadataPanel = new StackPanel();
+        metadataPanel.Children.Add(Labeled("テンプレート名", _name));
+        metadataPanel.Children.Add(Labeled("カテゴリ", _category));
+        targetContent.Children.Add(metadataPanel);
+        var tagPanel = new StackPanel();
+        tagPanel.Children.Add(new TextBlock { Text = "タグ", Margin = new Thickness(2, 2, 0, 3) });
+        tagPanel.Children.Add(_tags);
         var tagQuickButtons = new WrapPanel { Margin = new Thickness(90, -6, 0, 3) };
         CsvInputButtons.Populate(tagQuickButtons, tagValues ?? Array.Empty<string>(), value => CsvInputButtons.Append(_tags, value));
-        content.Children.Add(tagQuickButtons);
+        tagPanel.Children.Add(tagQuickButtons);
+        targetContent.Children.Add(tagPanel);
+        _targetCombo.SelectionChanged += (_, _) =>
+        {
+            bool isExisting = TargetPreset != null;
+            metadataPanel.Visibility = isExisting ? Visibility.Collapsed : Visibility.Visible;
+            tagPanel.Visibility = isExisting ? Visibility.Collapsed : Visibility.Visible;
+            if (isExisting)
+            {
+                _name.Text = TargetPreset!.Name;
+                _category.Text = TargetPreset.Category;
+                _tags.Text = TargetPreset.Tags;
+            }
+            else
+            {
+                _name.IsEnabled = true;
+                _category.IsEnabled = true;
+            }
+        };
+        metadataPanel.Visibility = TargetPreset != null ? Visibility.Collapsed : Visibility.Visible;
+        tagPanel.Visibility = TargetPreset != null ? Visibility.Collapsed : Visibility.Visible;
+        targetGroup.Content = targetContent;
+        content.Children.Add(targetGroup);
 
         var itemGroup = new GroupBox { Header = "登録するアイテム", Margin = new Thickness(0, 5, 0, 8), Padding = new Thickness(10) };
-        itemGroup.Content = new TextBlock
+        var itemList = new StackPanel();
+        itemList.Children.Add(new TextBlock
         {
-            Text = $"選択中の {_items.Count} 個のアイテムを、位置関係を保ったテンプレートとして登録します。音声・映像アイテムも含まれます。",
-            TextWrapping = TextWrapping.Wrap
-        };
+            Text = "登録するアイテムを選択してください。プレビュー生成専用のアイテムはチェックを外せます。",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 5),
+            Opacity = 0.8
+        });
+        for (int index = 0; index < _items.Count; index++)
+        {
+            var item = _items[index];
+            var check = new CheckBox
+            {
+                Content = $"{index + 1}. {item.GetType().Name}",
+                Tag = item,
+                IsChecked = true,
+                Margin = new Thickness(2, 2, 0, 2),
+                ToolTip = "チェックを外すとテンプレートとプレビュー生成の対象から除外します"
+            };
+            _itemChecks.Add(check);
+            itemList.Children.Add(check);
+        }
+        itemGroup.Content = itemList;
         content.Children.Add(itemGroup);
 
         var colorGroup = new GroupBox { Header = "パターン色", Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(10, 7, 10, 7) };
@@ -126,33 +195,15 @@ internal sealed class ItemTemplatePresetDialog : Window
                 catch { }
             }
         };
-        _thumbTime.ValueChanged += (_, _) =>
+        DependencyPropertyDescriptor.FromProperty(TextBoxSlider.ValueProperty, typeof(TextBoxSlider))?.AddValueChanged(_thumbTime, (_, _) =>
         {
-            if (!_timeInput.IsKeyboardFocusWithin)
-            {
-                _updatingThumbnailTime = true;
-                _timeInput.Text = _thumbTime.Value.ToString("0.0", CultureInfo.CurrentCulture);
-                _updatingThumbnailTime = false;
-            }
             if (!string.IsNullOrWhiteSpace(PreviewVideoPath) && File.Exists(PreviewVideoPath))
             {
                 _thumbnailRefreshTimer.Stop();
                 _thumbnailRefreshTimer.Start();
             }
-        };
-        _timeInput.LostFocus += (_, _) => ApplyThumbnailTimeInput();
-        _timeInput.TextChanged += (_, _) =>
-        {
-            if (_updatingThumbnailTime || !double.TryParse(_timeInput.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out double value)) return;
-            _thumbTime.Value = Math.Clamp(value, _thumbTime.Minimum, _thumbTime.Maximum);
-        };
-        _timeInput.KeyDown += (_, e) =>
-        {
-            if (e.Key == System.Windows.Input.Key.Enter) { ApplyThumbnailTimeInput(); e.Handled = true; }
-        };
+        });
         timeRow.Children.Add(_thumbTime);
-        timeRow.Children.Add(_timeInput);
-        timeRow.Children.Add(new TextBlock { Text = "秒", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 0, 0) });
         previewOptions.Children.Add(timeRow);
 
         var previewHeader = new DockPanel { Margin = new Thickness(0, 3, 0, 4) };
@@ -208,19 +259,6 @@ internal sealed class ItemTemplatePresetDialog : Window
         };
     }
 
-    private void ApplyThumbnailTimeInput()
-    {
-        if (!double.TryParse(_timeInput.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out double value))
-        {
-            _timeInput.Text = _thumbTime.Value.ToString("0.0", CultureInfo.CurrentCulture);
-            return;
-        }
-        _thumbTime.Value = Math.Clamp(value, _thumbTime.Minimum, _thumbTime.Maximum);
-        _updatingThumbnailTime = true;
-        _timeInput.Text = _thumbTime.Value.ToString("0.0", CultureInfo.CurrentCulture);
-        _updatingThumbnailTime = false;
-    }
-
     private void UpdateVideoSeekPosition()
     {
         if (_draggingVideoSeek || !_video.NaturalDuration.HasTimeSpan) return;
@@ -229,12 +267,12 @@ internal sealed class ItemTemplatePresetDialog : Window
         _updatingVideoSeek = false;
     }
 
-    private static FrameworkElement Labeled(string label, TextBox input)
+    private static FrameworkElement Labeled(string label, Control input)
     {
         var row = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
         var caption = new TextBlock { Text = label, Width = 90, VerticalAlignment = VerticalAlignment.Center };
         DockPanel.SetDock(caption, Dock.Left);
-        input.Padding = new Thickness(5, 3, 5, 3);
+        if (input is Control control) control.Padding = new Thickness(5, 3, 5, 3);
         row.Children.Add(caption);
         row.Children.Add(input);
         return row;
@@ -280,8 +318,8 @@ internal sealed class ItemTemplatePresetDialog : Window
             PreviewVideoDurationSeconds = result.DurationSeconds;
             PreviewImage = result.Thumbnail;
             _thumbnail.Source = PreviewImage;
-            _thumbTime.Maximum = Math.Max(0, result.DurationSeconds - 1.0 / Math.Max(1, result.FPS));
-            _thumbTime.IsEnabled = _thumbTime.Maximum > 0;
+            _thumbTime.Max = Math.Max(0, result.DurationSeconds - 1.0 / Math.Max(1, result.FPS));
+            _thumbTime.IsEnabled = _thumbTime.Max > 0;
             _video.Visibility = Visibility.Visible;
             _videoSeek.Visibility = Visibility.Visible;
             _video.Stop();

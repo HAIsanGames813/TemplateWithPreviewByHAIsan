@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -28,14 +29,12 @@ public sealed class CreateEffectPresetDialog : Window
 
     private readonly ComboBox _presetCombo;
     private readonly TextBox _nameBox;
-    private readonly ComboBox _categoryBox;
+    private readonly TextBox _categoryBox;
     private readonly TextBox _tagsBox;
     private readonly ColorPicker _colorPicker;
     private readonly CheckBox _regenerateVideoCheckBox;
     private readonly CheckBox _regenerateThumbnailCheckBox;
-    private readonly Slider _thumbnailTimeSlider;
-    private readonly TextBox _thumbnailTimeInput;
-    private readonly TextBlock _thumbnailTimeLabel;
+    private readonly TextBoxSlider _thumbnailTimeSlider;
     private readonly Image _previewImage;
     private readonly MediaElement _previewVideo;
     private readonly Slider _videoSeekSlider = new() { Minimum = 0, Maximum = 0, IsEnabled = false, Margin = new Thickness(0, 4, 0, 0) };
@@ -45,11 +44,12 @@ public sealed class CreateEffectPresetDialog : Window
     private readonly PresetPattern? _defaultPattern;
     private readonly YukkuriMovieMaker.Project.Items.IItem? _sourceItem;
     private readonly bool _isEditMode;
+    private StackPanel? _metadataPanel;
+    private StackPanel? _tagPanel;
     private readonly List<string> _temporaryPreviewFiles = new();
     private readonly DispatcherTimer _thumbnailRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _videoPositionTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private string? _activePreviewVideoPath;
-    private bool _updatingThumbnailTime;
     private bool _updatingVideoSeek;
     private bool _draggingVideoSeek;
 
@@ -78,6 +78,7 @@ public sealed class CreateEffectPresetDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ResizeMode = ResizeMode.CanResize;
         Owner = Application.Current?.MainWindow;
+        Style = Application.Current?.TryFindResource(typeof(Window)) as Style;
 
         var root = new DockPanel { Margin = new Thickness(12) };
         var bottom = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
@@ -117,25 +118,24 @@ public sealed class CreateEffectPresetDialog : Window
         targetContent.Children.Add(_presetCombo);
 
         var metadataPanel = new StackPanel();
+        _metadataPanel = metadataPanel;
         metadataPanel.Children.Add(new TextBlock { Text = "プリセット名", Margin = new Thickness(0, 0, 0, 3) });
         _nameBox = new TextBox { Text = "新しいエフェクト", Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(4, 3, 4, 3) };
         metadataPanel.Children.Add(_nameBox);
         metadataPanel.Children.Add(new TextBlock { Text = "カテゴリ", Margin = new Thickness(0, 0, 0, 3) });
-        _categoryBox = new ComboBox { IsEditable = true, Margin = new Thickness(0, 0, 0, 8), MinHeight = 26 };
-        foreach (var category in categoryList) _categoryBox.Items.Add(category);
-        _categoryBox.Text = "";
+        _categoryBox = new TextBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(4, 3, 4, 3) };
         metadataPanel.Children.Add(_categoryBox);
-        var categoryQuickButtons = new WrapPanel { Margin = new Thickness(0, -5, 0, 7) };
-        CsvInputButtons.Populate(categoryQuickButtons, categoryList, value => CsvInputButtons.Append(_categoryBox, value));
-        metadataPanel.Children.Add(categoryQuickButtons);
         targetContent.Children.Add(metadataPanel);
         metadataPanel.Visibility = _isEditMode ? Visibility.Collapsed : Visibility.Visible;
-        targetContent.Children.Add(new TextBlock { Text = "タグ (カンマ区切り)", Margin = new Thickness(0, 2, 0, 3) });
+        var tagPanel = new StackPanel();
+        _tagPanel = tagPanel;
+        tagPanel.Children.Add(new TextBlock { Text = "タグ", Margin = new Thickness(0, 2, 0, 3) });
         _tagsBox = new TextBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(4, 3, 4, 3), ToolTip = "例: 感情, 赤系" };
-        targetContent.Children.Add(_tagsBox);
+        tagPanel.Children.Add(_tagsBox);
         var tagQuickButtons = new WrapPanel { Margin = new Thickness(0, -5, 0, 7) };
         CsvInputButtons.Populate(tagQuickButtons, presetList.SelectMany(preset => preset.GetTagList()), value => CsvInputButtons.Append(_tagsBox, value));
-        targetContent.Children.Add(tagQuickButtons);
+        tagPanel.Children.Add(tagQuickButtons);
+        targetContent.Children.Add(tagPanel);
         targetGroup.Content = targetContent;
         content.Children.Add(targetGroup);
 
@@ -154,36 +154,13 @@ public sealed class CreateEffectPresetDialog : Window
         var thumbnailTimeRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(20, 0, 0, 8) };
         thumbnailTimeRow.Children.Add(new TextBlock { Text = "サムネイルにする動画の秒数:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
         double maxPreviewSeconds = GetMaximumPreviewSeconds(sourceItem, defaultPattern);
-        _thumbnailTimeSlider = new Slider { Minimum = 0, Maximum = maxPreviewSeconds, Value = 0, Width = 250, IsEnabled = maxPreviewSeconds > 0, TickFrequency = 0.1, IsSnapToTickEnabled = false };
-        _thumbnailTimeInput = new TextBox { Text = "0.0", Width = 54, Padding = new Thickness(4, 2, 4, 2), VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
-        _thumbnailTimeLabel = new TextBlock { Text = "秒", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 0, 0) };
-        _thumbnailTimeSlider.ValueChanged += (_, _) =>
+        _thumbnailTimeSlider = new TextBoxSlider { Min = 0, Max = maxPreviewSeconds, DefaultMin = 0, DefaultMax = Math.Max(1, maxPreviewSeconds), Value = 0, Width = 300, IsEnabled = maxPreviewSeconds > 0, Unit = "秒", IsUnitVisible = true, StringFormat = "F1", Delta = 0.1 };
+        DependencyPropertyDescriptor.FromProperty(TextBoxSlider.ValueProperty, typeof(TextBoxSlider))?.AddValueChanged(_thumbnailTimeSlider, (_, _) =>
         {
-            if (!_thumbnailTimeInput.IsKeyboardFocusWithin)
-            {
-                _updatingThumbnailTime = true;
-                _thumbnailTimeInput.Text = _thumbnailTimeSlider.Value.ToString("0.0", CultureInfo.CurrentCulture);
-                _updatingThumbnailTime = false;
-            }
-            if (!_updatingThumbnailTime)
-            {
-                _thumbnailRefreshTimer.Stop();
-                _thumbnailRefreshTimer.Start();
-            }
-        };
-        _thumbnailTimeInput.LostFocus += (_, _) => ApplyThumbnailTimeInput();
-        _thumbnailTimeInput.KeyDown += (_, e) =>
-        {
-            if (e.Key == System.Windows.Input.Key.Enter) { ApplyThumbnailTimeInput(); e.Handled = true; }
-        };
-        _thumbnailTimeInput.TextChanged += (_, _) =>
-        {
-            if (_updatingThumbnailTime || !double.TryParse(_thumbnailTimeInput.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out double value)) return;
-            _thumbnailTimeSlider.Value = Math.Clamp(value, _thumbnailTimeSlider.Minimum, _thumbnailTimeSlider.Maximum);
-        };
+            _thumbnailRefreshTimer.Stop();
+            _thumbnailRefreshTimer.Start();
+        });
         thumbnailTimeRow.Children.Add(_thumbnailTimeSlider);
-        thumbnailTimeRow.Children.Add(_thumbnailTimeInput);
-        thumbnailTimeRow.Children.Add(_thumbnailTimeLabel);
         previewContent.Children.Add(_regenerateVideoCheckBox);
         previewContent.Children.Add(_regenerateThumbnailCheckBox);
         previewContent.Children.Add(thumbnailTimeRow);
@@ -300,6 +277,8 @@ public sealed class CreateEffectPresetDialog : Window
         bool isNew = preset == null;
         _nameBox.IsEnabled = isNew;
         _categoryBox.IsEnabled = isNew;
+        if (_metadataPanel != null) _metadataPanel.Visibility = isNew ? Visibility.Visible : Visibility.Collapsed;
+        if (_tagPanel != null) _tagPanel.Visibility = isNew ? Visibility.Visible : Visibility.Collapsed;
         if (preset != null)
         {
             _nameBox.Text = preset.Name;
@@ -321,9 +300,9 @@ public sealed class CreateEffectPresetDialog : Window
         if (preset != null)
         {
             var pattern = _isEditMode ? _defaultPattern : ReferenceEquals(preset, _defaultTarget) ? _defaultPattern : preset.ActivePattern;
-            _thumbnailTimeSlider.Maximum = GetMaximumPreviewSeconds(_sourceItem, pattern);
-            _thumbnailTimeSlider.IsEnabled = _thumbnailTimeSlider.Maximum > 0;
-            _thumbnailTimeSlider.Value = Math.Clamp(pattern?.ThumbnailTimeSeconds ?? 0, _thumbnailTimeSlider.Minimum, _thumbnailTimeSlider.Maximum);
+            _thumbnailTimeSlider.Max = GetMaximumPreviewSeconds(_sourceItem, pattern);
+            _thumbnailTimeSlider.IsEnabled = _thumbnailTimeSlider.Max > 0;
+            _thumbnailTimeSlider.Value = Math.Clamp(pattern?.ThumbnailTimeSeconds ?? 0, _thumbnailTimeSlider.Min, _thumbnailTimeSlider.Max);
             if (pattern != null && (_isEditMode || ReferenceEquals(preset, _defaultTarget)))
             {
                 try { _colorPicker.Value = (Color)ColorConverter.ConvertFromString(pattern.SampleColor); }
@@ -332,9 +311,9 @@ public sealed class CreateEffectPresetDialog : Window
         }
         else
         {
-            _thumbnailTimeSlider.Maximum = GetMaximumPreviewSeconds(_sourceItem, _defaultPattern);
-            _thumbnailTimeSlider.IsEnabled = _thumbnailTimeSlider.Maximum > 0;
-            _thumbnailTimeSlider.Value = Math.Clamp(_defaultPattern?.ThumbnailTimeSeconds ?? 0, _thumbnailTimeSlider.Minimum, _thumbnailTimeSlider.Maximum);
+            _thumbnailTimeSlider.Max = GetMaximumPreviewSeconds(_sourceItem, _defaultPattern);
+            _thumbnailTimeSlider.IsEnabled = _thumbnailTimeSlider.Max > 0;
+            _thumbnailTimeSlider.Value = Math.Clamp(_defaultPattern?.ThumbnailTimeSeconds ?? 0, _thumbnailTimeSlider.Min, _thumbnailTimeSlider.Max);
         }
     }
 
@@ -462,21 +441,6 @@ public sealed class CreateEffectPresetDialog : Window
         {
             _previewStatus.Text = $"静止画プレビューを生成できませんでした: {ex.Message}";
         }
-    }
-
-    private void ApplyThumbnailTimeInput()
-    {
-        if (!double.TryParse(_thumbnailTimeInput.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out double value))
-        {
-            _updatingThumbnailTime = true;
-            _thumbnailTimeInput.Text = _thumbnailTimeSlider.Value.ToString("0.0", CultureInfo.CurrentCulture);
-            _updatingThumbnailTime = false;
-            return;
-        }
-        _thumbnailTimeSlider.Value = Math.Clamp(value, _thumbnailTimeSlider.Minimum, _thumbnailTimeSlider.Maximum);
-        _updatingThumbnailTime = true;
-        _thumbnailTimeInput.Text = _thumbnailTimeSlider.Value.ToString("0.0", CultureInfo.CurrentCulture);
-        _updatingThumbnailTime = false;
     }
 
     private void UpdateVideoSeekPosition()

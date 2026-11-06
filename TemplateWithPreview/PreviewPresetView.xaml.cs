@@ -1,3 +1,9 @@
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -19,8 +25,13 @@ public partial class PreviewPresetView : UserControl
     private bool _suppressNextCardClick;
     private readonly DispatcherTimer _dockPreviewRefreshTimer;
     private readonly DispatcherTimer _libraryPlaybackTimer;
+    private readonly MediaPlayer _libraryPreviewPlayer = new();
     private bool _librarySeekDragging;
     private bool _librarySeekUpdating;
+    private bool _libraryPreviewIsAudio;
+    private bool _libraryPreviewPaused;
+    private bool _libraryVideoMuteRetryAttempted;
+    private bool _libraryVideoFallbackAttempted;
     private int _pressedCategoryIndex = -1;
     private int _draggedCategoryIndex = -1;
     private Point _categoryDragStart;
@@ -37,12 +48,28 @@ public partial class PreviewPresetView : UserControl
                 _ = viewModel.RefreshAllPreviewsAsync();
         };
         _libraryPlaybackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        _libraryPlaybackTimer.Tick += (_, _) =>
+        _libraryPlaybackTimer.Tick += (_, _) => UpdateLibrarySeekSliderFromPlayback();
+        _libraryPreviewPlayer.MediaOpened += (_, _) =>
         {
-            if (_librarySeekDragging || !LibraryPopupMedia.NaturalDuration.HasTimeSpan) return;
-            _librarySeekUpdating = true;
-            LibrarySeekSlider.Value = LibraryPopupMedia.Position.TotalSeconds;
-            _librarySeekUpdating = false;
+            _libraryPreviewPlayer.Play();
+            ShowLibrarySeekBar(_libraryPreviewPlayer.NaturalDuration);
+        };
+        _libraryPreviewPlayer.MediaEnded += (_, _) =>
+        {
+            _libraryPlaybackTimer.Stop();
+            _libraryPreviewPlayer.Stop();
+        };
+        _libraryPreviewPlayer.MediaFailed += (_, e) =>
+        {
+            _libraryPlaybackTimer.Stop();
+            _libraryPreviewPlayer.Stop();
+            if (DataContext is PreviewPresetViewModel vm)
+            {
+                int hresult = e.ErrorException?.HResult ?? 0;
+                vm.StatusMessage = hresult == unchecked((int)0xC00D11B1)
+                    ? "音声を再生できませんでした (0xC00D11B1)。音声デバイスまたは音声コーデックを確認してください。"
+                    : $"素材を再生できませんでした (0x{hresult:X8}): {e.ErrorException?.GetBaseException().Message}";
+            }
         };
         Loaded += OnLoaded;
         SizeChanged += OnDockLayoutChanged;
@@ -50,8 +77,7 @@ public partial class PreviewPresetView : UserControl
         Unloaded += (_, _) =>
         {
             _dockPreviewRefreshTimer.Stop();
-            _libraryPlaybackTimer.Stop();
-            LibraryPopupMedia.Stop();
+            StopLibraryPreview();
             StopAudioPreview();
         };
         _audioPreviewPlayer.MediaOpened += (_, _) =>
@@ -102,13 +128,7 @@ public partial class PreviewPresetView : UserControl
             LibraryPreviewPopup.IsOpen = false;
     }
 
-    private void LibraryPreviewPopup_Closed(object? sender, EventArgs e)
-    {
-        _libraryPlaybackTimer.Stop();
-        LibraryPopupMedia.Stop();
-        LibraryPopupMedia.Source = null;
-        LibrarySeekSlider.Visibility = Visibility.Collapsed;
-    }
+    private void LibraryPreviewPopup_Closed(object? sender, EventArgs e) => StopLibraryPreview();
 
     private void CategoryTabs_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -204,52 +224,199 @@ public partial class PreviewPresetView : UserControl
     private void LibraryAsset_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not FrameworkElement card || card.DataContext is not LibraryAsset asset) return;
+        if (DataContext is PreviewPresetViewModel selectionVm && selectionVm.IsSelectionMode)
+        {
+            selectionVm.ToggleLibrarySelection(asset, (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift);
+            e.Handled = true;
+            return;
+        }
         if (e.ClickCount >= 2)
         {
+            StopLibraryPreview();
+            LibraryPreviewPopup.IsOpen = false;
             if (DataContext is PreviewPresetViewModel vm) vm.AddLibraryAssetToTimeline(asset);
             e.Handled = true;
             return;
         }
 
-        LibraryPopupMedia.Stop();
-        LibraryPopupMedia.Source = null;
-        LibraryPopupMedia.Visibility = Visibility.Collapsed;
+        StopLibraryPreview();
         LibraryPopupImage.Source = asset.Thumbnail;
         LibraryPopupImage.Visibility = Visibility.Visible;
-        LibrarySeekSlider.Visibility = Visibility.Collapsed;
-        _libraryPlaybackTimer.Stop();
+        LibraryPopupMedia.Visibility = Visibility.Collapsed;
+        _libraryPreviewIsAudio = asset.Type is "BGM" or "SE";
 
-        if (asset.Type is "BGM" or "SE" or "動画")
+        if (asset.Type == "動画")
         {
+            _libraryVideoMuteRetryAttempted = false;
+            _libraryVideoFallbackAttempted = false;
+            LibraryPopupMedia.IsMuted = false;
             LibraryPopupMedia.Visibility = Visibility.Visible;
-            LibraryPopupMedia.Opacity = asset.Type == "動画" ? 1 : 0;
-            if (asset.Type == "動画") LibraryPopupImage.Visibility = Visibility.Collapsed;
-            LibraryPopupMedia.Source = new System.Uri(asset.Path);
+            LibraryPopupMedia.Source = new Uri(asset.Path);
             LibraryPopupMedia.Play();
+            LibraryPauseButton.Visibility = Visibility.Visible;
+            LibraryPauseButton.ContentTemplate = (DataTemplate)Resources["StopIcon"];
+            LibraryPauseButton.ToolTip = "停止";
+        }
+        else if (_libraryPreviewIsAudio)
+        {
+            _libraryPreviewPlayer.Open(new Uri(asset.Path));
+            _libraryPreviewPlayer.Play();
+            LibraryPauseButton.Visibility = Visibility.Visible;
+            LibraryPauseButton.ContentTemplate = (DataTemplate)Resources["StopIcon"];
+            LibraryPauseButton.ToolTip = "停止";
         }
 
-        Point point = e.GetPosition(RootGrid);
-        const double previewWidth = 328;
-        const double previewHeight = 198;
-        double x = point.X + 18;
-        double y = point.Y + 18;
-        if (x + previewWidth > RootGrid.ActualWidth) x = Math.Max(0, point.X - previewWidth - 12);
-        if (y + previewHeight > RootGrid.ActualHeight) y = Math.Max(0, point.Y - previewHeight - 12);
-        LibraryPreviewPopup.HorizontalOffset = x;
-        LibraryPreviewPopup.VerticalOffset = y;
+        PlaceLibraryPreview(e.GetPosition(RootGrid));
         LibraryPreviewPopup.IsOpen = true;
+    }
+
+    private void PlaceLibraryPreview(Point cursor)
+    {
+        const double previewWidth = 488;
+        const double previewHeight = 358;
+        const double margin = 8;
+        const double gap = 14;
+        double availableWidth = RootGrid.ActualWidth;
+        double availableHeight = RootGrid.ActualHeight;
+        double x = cursor.X + gap + previewWidth <= availableWidth - margin
+            ? cursor.X + gap
+            : cursor.X - gap - previewWidth;
+        double y = cursor.Y + gap + previewHeight <= availableHeight - margin
+            ? cursor.Y + gap
+            : cursor.Y - gap - previewHeight;
+        x = Math.Clamp(x, margin, Math.Max(margin, availableWidth - previewWidth - margin));
+        y = Math.Clamp(y, margin, Math.Max(margin, availableHeight - previewHeight - margin));
+        var chosen = new Point(x, y);
+
+        LibraryPreviewPopup.HorizontalOffset = chosen.X;
+        LibraryPreviewPopup.VerticalOffset = chosen.Y;
+    }
+
+    private void StopLibraryPreview()
+    {
+        _libraryPlaybackTimer.Stop();
+        _libraryPreviewPlayer.Stop();
+        _libraryPreviewPlayer.Close();
+        LibraryPopupMedia.Stop();
+        LibraryPopupMedia.Source = null;
+        LibraryPopupMedia.IsMuted = false;
+        LibrarySeekSlider.Visibility = Visibility.Collapsed;
+        UpdateLibrarySeekTimeText(0, 0);
+        LibraryPauseButton.Visibility = Visibility.Collapsed;
+        LibraryPauseButton.ContentTemplate = (DataTemplate)Resources["StopIcon"];
+        LibraryPauseButton.ToolTip = "停止";
+        _libraryPreviewPaused = false;
+        _libraryPreviewIsAudio = false;
+    }
+
+    private void ShowLibrarySeekBar(Duration duration)
+    {
+        if (!duration.HasTimeSpan) return;
+        LibrarySeekSlider.Maximum = Math.Max(0.1, duration.TimeSpan.TotalSeconds);
+        LibrarySeekSlider.Value = 0;
+        UpdateLibrarySeekTimeText(0, duration.TimeSpan.TotalSeconds);
+        LibrarySeekSlider.Visibility = Visibility.Visible;
+        _libraryPlaybackTimer.Start();
+    }
+
+    private void UpdateLibrarySeekSliderFromPlayback()
+    {
+        if (_librarySeekDragging) return;
+        Duration duration = _libraryPreviewIsAudio ? _libraryPreviewPlayer.NaturalDuration : LibraryPopupMedia.NaturalDuration;
+        if (!duration.HasTimeSpan) return;
+        TimeSpan position = _libraryPreviewIsAudio ? _libraryPreviewPlayer.Position : LibraryPopupMedia.Position;
+        _librarySeekUpdating = true;
+        LibrarySeekSlider.Value = position.TotalSeconds;
+        _librarySeekUpdating = false;
+        UpdateLibrarySeekTimeText(position.TotalSeconds, duration.TimeSpan.TotalSeconds);
+    }
+
+    private void UpdateLibrarySeekTimeText(double currentSeconds, double totalSeconds)
+    {
+        if (LibrarySeekTimeText == null) return;
+        static string FormatTime(double seconds)
+        {
+            TimeSpan time = TimeSpan.FromSeconds(Math.Max(0, seconds));
+            return time.TotalHours >= 1 ? time.ToString(@"h\:mm\:ss") : time.ToString(@"mm\:ss");
+        }
+        LibrarySeekTimeText.Text = $"{FormatTime(currentSeconds)} / {FormatTime(totalSeconds)}";
+    }
+
+    private void SeekLibraryPreview(double seconds)
+    {
+        var position = TimeSpan.FromSeconds(Math.Clamp(seconds, 0, LibrarySeekSlider.Maximum));
+        if (_libraryPreviewIsAudio)
+        {
+            bool resumeAfterSeek = !_libraryPreviewPaused;
+            _libraryPlaybackTimer.Stop();
+            if (resumeAfterSeek) _libraryPreviewPlayer.Stop();
+            _libraryPreviewPlayer.Position = position;
+            UpdateLibrarySeekTimeText(position.TotalSeconds, LibrarySeekSlider.Maximum);
+            Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() =>
+            {
+                _libraryPreviewPlayer.Position = position;
+                if (resumeAfterSeek && _libraryPreviewIsAudio && !_libraryPreviewPaused)
+                {
+                    _libraryPreviewPlayer.Play();
+                    _libraryPlaybackTimer.Start();
+                }
+            }));
+        }
+        else if (LibraryPopupMedia.NaturalDuration.HasTimeSpan)
+        {
+            bool resumeAfterSeek = !_libraryPreviewPaused;
+            _libraryPlaybackTimer.Stop();
+            if (resumeAfterSeek) LibraryPopupMedia.Pause();
+            LibraryPopupMedia.Position = position;
+            UpdateLibrarySeekTimeText(position.TotalSeconds, LibrarySeekSlider.Maximum);
+            // MediaElementによってはSliderのイベント中のPosition変更が反映されないため、UI更新後にも再適用する。
+            Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() =>
+            {
+                if (LibraryPopupMedia.NaturalDuration.HasTimeSpan)
+                {
+                    LibraryPopupMedia.Position = position;
+                    if (resumeAfterSeek && !_libraryPreviewPaused)
+                    {
+                        LibraryPopupMedia.Play();
+                        _libraryPlaybackTimer.Start();
+                    }
+                }
+            }));
+        }
     }
 
     private void LibraryPopupMedia_MediaOpened(object sender, RoutedEventArgs e)
     {
+        LibraryPopupImage.Visibility = Visibility.Collapsed;
         LibraryPopupMedia.Play();
-        if (LibraryPopupMedia.NaturalDuration.HasTimeSpan)
+        ShowLibrarySeekBar(LibraryPopupMedia.NaturalDuration);
+    }
+
+    private void LibraryPauseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_libraryPreviewIsAudio && LibraryPopupMedia.Visibility != Visibility.Visible) return;
+        if (_libraryPreviewPaused)
         {
-            LibrarySeekSlider.Maximum = Math.Max(0.1, LibraryPopupMedia.NaturalDuration.TimeSpan.TotalSeconds);
-            LibrarySeekSlider.Value = 0;
-            LibrarySeekSlider.Visibility = Visibility.Visible;
+            if (_libraryPreviewIsAudio) _libraryPreviewPlayer.Play();
+            else LibraryPopupMedia.Play();
             _libraryPlaybackTimer.Start();
+            LibraryPauseButton.ContentTemplate = (DataTemplate)Resources["StopIcon"];
+            LibraryPauseButton.ToolTip = "停止";
         }
+        else
+        {
+            if (_libraryPreviewIsAudio)
+            {
+                TimeSpan position = _libraryPreviewPlayer.Position;
+                _libraryPreviewPlayer.Stop();
+                _libraryPreviewPlayer.Position = position;
+            }
+            else LibraryPopupMedia.Pause();
+            _libraryPlaybackTimer.Stop();
+            LibraryPauseButton.ContentTemplate = (DataTemplate)Resources["PlayIcon"];
+            LibraryPauseButton.ToolTip = "再生";
+        }
+        _libraryPreviewPaused = !_libraryPreviewPaused;
     }
 
     private void LibraryPopupMedia_MediaEnded(object sender, RoutedEventArgs e)
@@ -260,24 +427,130 @@ public partial class PreviewPresetView : UserControl
 
     private void LibraryPopupMedia_MediaFailed(object sender, ExceptionRoutedEventArgs e)
     {
+        Uri? failedSource = LibraryPopupMedia.Source;
+        int hresult = e.ErrorException?.HResult ?? 0;
+        if (failedSource != null && failedSource.IsFile && !_libraryVideoFallbackAttempted)
+        {
+            _libraryVideoFallbackAttempted = true;
+            _ = RetryLibraryVideoWithFfmpegAsync(failedSource.LocalPath, hresult);
+            return;
+        }
+        if (failedSource != null && !_libraryVideoMuteRetryAttempted)
+        {
+            _libraryVideoMuteRetryAttempted = true;
+            LibraryPopupMedia.IsMuted = true;
+            LibraryPopupMedia.Stop();
+            LibraryPopupMedia.Source = null;
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                LibraryPopupMedia.Source = failedSource;
+                LibraryPopupMedia.Play();
+            }));
+            if (DataContext is PreviewPresetViewModel retryVm)
+                retryVm.StatusMessage = $"音声出力をミュートして動画を再試行しています (0x{hresult:X8})";
+            return;
+        }
         _libraryPlaybackTimer.Stop();
         LibraryPopupMedia.Stop();
+        LibraryPopupImage.Visibility = Visibility.Visible;
         if (DataContext is PreviewPresetViewModel vm)
-            vm.StatusMessage = $"素材を再生できませんでした: {e.ErrorException?.GetBaseException().Message}";
+            vm.StatusMessage = hresult == unchecked((int)0xC00D11B1)
+                ? "動画を再生できませんでした (0xC00D11B1)。音声デバイスまたは動画の音声コーデックを確認してください。"
+                : $"素材を再生できませんでした (0x{hresult:X8}): {e.ErrorException?.GetBaseException().Message}";
+    }
+
+    private async Task RetryLibraryVideoWithFfmpegAsync(string sourcePath, int hresult)
+    {
+        try
+        {
+            if (DataContext is PreviewPresetViewModel statusVm)
+                statusVm.StatusMessage = $"動画形式を変換して再生しています (0x{hresult:X8})...";
+            string cachePath = await Task.Run(() => TranscodeLibraryVideo(sourcePath));
+            await Dispatcher.InvokeAsync(() =>
+            {
+                LibraryPopupMedia.IsMuted = false;
+                LibraryPopupMedia.Source = new Uri(cachePath);
+                LibraryPopupMedia.Play();
+            });
+        }
+        catch (Exception ex)
+        {
+            if (DataContext is PreviewPresetViewModel vm)
+                vm.StatusMessage = $"動画を再生できませんでした (0x{hresult:X8})。互換形式への変換にも失敗しました: {ex.GetBaseException().Message}";
+        }
+    }
+
+    private static string TranscodeLibraryVideo(string sourcePath)
+    {
+        if (!File.Exists(sourcePath)) throw new FileNotFoundException("動画ファイルが見つかりません", sourcePath);
+        string ffmpeg = FindLibraryFfmpegPath();
+        var info = new FileInfo(sourcePath);
+        string keySource = $"{Path.GetFullPath(sourcePath)}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(keySource))).ToLowerInvariant();
+        string outputPath = Models.PresetStorage.GetLibraryVideoCachePath(key);
+        if (File.Exists(outputPath) && new FileInfo(outputPath).Length > 0) return outputPath;
+        string temporaryPath = outputPath + ".partial";
+        try
+        {
+            var start = new ProcessStartInfo(ffmpeg)
+            {
+                WorkingDirectory = Path.GetDirectoryName(ffmpeg)!, UseShellExecute = false,
+                CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true
+            };
+            start.ArgumentList.Add("-y"); start.ArgumentList.Add("-i"); start.ArgumentList.Add(sourcePath);
+            start.ArgumentList.Add("-map"); start.ArgumentList.Add("0:v:0");
+            start.ArgumentList.Add("-map"); start.ArgumentList.Add("0:a:0?");
+            start.ArgumentList.Add("-c:v"); start.ArgumentList.Add("h264_mf");
+            start.ArgumentList.Add("-pix_fmt"); start.ArgumentList.Add("nv12");
+            start.ArgumentList.Add("-c:a"); start.ArgumentList.Add("aac"); start.ArgumentList.Add("-b:a"); start.ArgumentList.Add("192k");
+            start.ArgumentList.Add("-movflags"); start.ArgumentList.Add("+faststart"); start.ArgumentList.Add(temporaryPath);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("FFmpegを起動できませんでした");
+            string errors = process.StandardError.ReadToEnd(); process.WaitForExit();
+            if (process.ExitCode != 0) throw new InvalidOperationException(errors.Trim());
+            File.Move(temporaryPath, outputPath, true);
+            return outputPath;
+        }
+        finally
+        {
+            try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+        }
+    }
+
+    private static string FindLibraryFfmpegPath()
+    {
+        string? directory = null;
+        try
+        {
+            var locatorType = AppDomain.CurrentDomain.GetAssemblies()
+                .Select(a => a.GetType("YukkuriMovieMaker.Plugin.FileSource.FFmpeg.FFmpegResourceLocator", false))
+                .FirstOrDefault(t => t != null);
+            directory = locatorType?.GetMethod("GetUserFFmpegDirectory", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null) as string;
+        }
+        catch { }
+        directory ??= AppDomain.CurrentDomain.GetAssemblies()
+            .Select(a => { try { return Path.GetDirectoryName(a.Location); } catch { return null; } })
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.Combine(p!, "user", "resources", "ffmpeg"))
+            .FirstOrDefault(p => File.Exists(Path.Combine(p, "ffmpeg.exe")));
+        string? path = string.IsNullOrWhiteSpace(directory) ? null : Path.Combine(directory, "ffmpeg.exe");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            throw new FileNotFoundException("YMM4付属のFFmpegが見つかりません", path ?? "YMM4\\user\\resources\\ffmpeg\\ffmpeg.exe");
+        return path;
     }
 
     private void LibrarySeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (_librarySeekUpdating || !_librarySeekDragging || !LibraryPopupMedia.NaturalDuration.HasTimeSpan) return;
-        LibraryPopupMedia.Position = TimeSpan.FromSeconds(Math.Clamp(LibrarySeekSlider.Value, 0, LibrarySeekSlider.Maximum));
+        if (_librarySeekUpdating) return;
+        // 音声はドラッグ中に何度も再生位置を変更するとノイズが出るため、MouseUp時だけ適用する。
+        if (_librarySeekDragging) return;
+        SeekLibraryPreview(LibrarySeekSlider.Value);
     }
 
     private void LibrarySeekSlider_MouseDown(object sender, MouseButtonEventArgs e) => _librarySeekDragging = true;
 
     private void LibrarySeekSlider_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (_librarySeekDragging && LibraryPopupMedia.NaturalDuration.HasTimeSpan)
-            LibraryPopupMedia.Position = TimeSpan.FromSeconds(Math.Clamp(LibrarySeekSlider.Value, 0, LibrarySeekSlider.Maximum));
+        if (_librarySeekDragging) SeekLibraryPreview(LibrarySeekSlider.Value);
         _librarySeekDragging = false;
     }
 
@@ -291,6 +564,18 @@ public partial class PreviewPresetView : UserControl
     {
         if (sender is MenuItem menuItem && menuItem.DataContext is LibraryAsset asset && DataContext is PreviewPresetViewModel vm)
             vm.RemoveLibraryAsset(asset);
+    }
+
+    private void LibrarySetCategory_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem menuItem && menuItem.DataContext is LibraryAsset asset && DataContext is PreviewPresetViewModel vm)
+            vm.SetLibraryAssetCategory(asset);
+    }
+
+    private void LibrarySetVolume_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem menuItem && menuItem.DataContext is LibraryAsset asset && DataContext is PreviewPresetViewModel vm)
+            vm.SetLibraryAssetVolume(asset);
     }
 
     private void Card_MouseEnter(object sender, MouseEventArgs e)
@@ -375,7 +660,7 @@ public partial class PreviewPresetView : UserControl
 
     private void Root_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (LibraryPreviewPopup.IsOpen && !IsLibraryAssetSource(e.OriginalSource as DependencyObject))
+        if (LibraryPreviewPopup.IsOpen && !IsLibraryPreviewChrome(e.OriginalSource as DependencyObject))
             LibraryPreviewPopup.IsOpen = false;
         if (DataContext is not PreviewPresetViewModel viewModel || !viewModel.IsReorderMode) return;
         DependencyObject? current = e.OriginalSource as DependencyObject;
@@ -392,10 +677,11 @@ public partial class PreviewPresetView : UserControl
         viewModel.EndReorderMode();
     }
 
-    private static bool IsLibraryAssetSource(DependencyObject? current)
+    private bool IsLibraryPreviewChrome(DependencyObject? current)
     {
         while (current != null)
         {
+            if (ReferenceEquals(current, LibrarySeekSlider) || ReferenceEquals(current, LibraryPauseButton)) return true;
             if (current is FrameworkElement element && element.DataContext is LibraryAsset) return true;
             current = GetParent(current);
         }

@@ -16,6 +16,9 @@
         <DataTemplate x:Key="EditIcon"><Path Data="M3,17.25V21H6.75L17.81,9.94L14.06,6.19L3,17.25M20.71,7.04C21.1,6.65 21.1,6.02 20.71,5.63L18.37,3.29C17.98,2.9 17.35,2.9 16.96,3.29L15.13,5.12L18.88,8.87L20.71,7.04Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="16" Height="16" Stretch="Uniform" /></DataTemplate>
         <DataTemplate x:Key="ExportIcon"><Path Data="M23,12L19,8V11H10V13H19V16M1,18V6C1,4.89 1.9,4 3,4H15A2,2 0 0,1 17,6V9H15V6H3V18H15V15H17V18A2,2 0 0,1 15,20H3A2,2 0 0,1 1,18Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="16" Height="16" Stretch="Uniform" /></DataTemplate>
         <DataTemplate x:Key="SearchIcon"><Path Data="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.43,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.43A6.47,6.47 0 0,1 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5A4.5,4.5 0 0,0 5,9.5A4.5,4.5 0 0,0 9.5,14A4.5,4.5 0 0,0 14,9.5A4.5,4.5 0 0,0 9.5,5Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="16" Height="16" Stretch="Uniform" /></DataTemplate>
+        <DataTemplate x:Key="PauseIcon"><Path Data="M8,5H11V19H8V5M13,5H16V19H13V5Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="16" Height="16" Stretch="Uniform" /></DataTemplate>
+        <DataTemplate x:Key="PlayIcon"><Path Data="M8,5.14V18.86L19,12L8,5.14Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="16" Height="16" Stretch="Uniform" /></DataTemplate>
+        <DataTemplate x:Key="StopIcon"><Path Data="M6,6H18V18H6V6Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Width="16" Height="16" Stretch="Uniform" /></DataTemplate>
         <DataTemplate x:Key="ApplyEffectIcon"><Path Data="M7.5,5.6L5,7L6.4,4.5L5,2L7.5,3.4L10,2L8.6,4.5L10,7L7.5,5.6M19.5,15.4L22,14L20.6,16.5L22,19L19.5,17.6L17,19L18.4,16.5L17,14L19.5,15.4M22,2L20.6,4.5L22,7L19.5,5.6L17,7L18.4,4.5L17,2L19.5,3.4L22,2M13.34,12.78L15.78,10.34L13.66,8.22L11.22,10.66L13.34,12.78M14.37,7.29L16.71,9.63C17.1,10 17.1,10.65 16.71,11.04L5.04,22.71C4.65,23.1 4,23.1 3.63,22.71L1.29,20.37C0.9,20 0.9,19.35 1.29,18.96L12.96,7.29C13.35,6.9 14,6.9 14.37,7.29Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Width="17" Height="17" Stretch="Uniform" /></DataTemplate>
         <DataTemplate x:Key="ApplyFontIcon"><Path Data="M17,8H20V20H21V21H17V20H18V17H14L12.5,20H14V21H10V20H11L17,8M18,9L14.5,16H18V9M5,3H10C11.11,3 12,3.89 12,5V16H9V11H6V16H3V5C3,3.89 3.89,3 5,3M6,5V9H9V5H6Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Width="17" Height="17" Stretch="Uniform" /></DataTemplate>
         <DataTemplate x:Key="ApplyPositionIcon"><Path Data="M13,11H18L16.5,9.5L17.92,8.08L21.84,12L17.92,15.92L16.5,14.5L18,13H13V18L14.5,16.5L15.92,17.92L12,21.84L8.08,17.92L9.5,16.5L11,18V13H6L7.5,14.5L6.08,15.92L2.16,12L6.08,8.08L7.5,9.5L6,11H11V6L9.5,7.5L8.08,6.08L12,2.16L15.92,6.08L14.5,7.5L13,6V11Z" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Width="17" Height="17" Stretch="Uniform" /></DataTemplate>
@@ -60,6 +63,16 @@
             </Style.Triggers>
         </Style>
 
+        <Style x:Key="LibraryNonAudioCardStyle" TargetType="Border" BasedOn="{StaticResource PresetCardStyle}">
+            <Setter Property="BorderThickness" Value="3" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter Property="BorderBrush" Value="#55C878" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- 控えめなタグバッジ -->
         <Style x:Key="BadgeStyle" TargetType="Border">
             <Setter Property="CornerRadius" Value="2" />
@@ -90,7 +103,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <TabControl Grid.Column="0" SelectedIndex="{Binding PresetTabIndex}" SelectionChanged="PresetTabs_SelectionChanged" Width="172" Height="38" Margin="0,0,8,0"
+                <TabControl Grid.Column="0" SelectedIndex="{Binding PresetTabIndex}" SelectionChanged="PresetTabs_SelectionChanged" Width="214" Height="38" Margin="0,0,8,0"
                             Style="{DynamicResource {x:Type TabControl}}">
                     <TabItem ToolTip="テキストプリセット" Content="{x:Null}">
                         <TabItem.Header>
@@ -139,6 +152,15 @@
                                     <Setter Property="ToolTip" Value="素材ライブラリを更新" />
                                     <Setter Property="Command" Value="{Binding RefreshCommand}" />
                                 </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsSelectionMode}" Value="True" />
+                                        <Condition Binding="{Binding SelectedPresetTab}" Value="LIB" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="ContentTemplate" Value="{StaticResource DeleteIcon}" />
+                                    <Setter Property="ToolTip" Value="選択した素材を削除" />
+                                    <Setter Property="Command" Value="{Binding DeleteSelectedPresetsCommand}" />
+                                </MultiDataTrigger>
                             </Style.Triggers>
                         </Style>
                     </Button.Style>
@@ -161,6 +183,15 @@
                                     <Setter Property="ToolTip" Value="素材を追加" />
                                     <Setter Property="Command" Value="{Binding AddLibraryFilesCommand}" />
                                 </DataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsSelectionMode}" Value="True" />
+                                        <Condition Binding="{Binding SelectedPresetTab}" Value="LIB" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="ContentTemplate" Value="{StaticResource EditIcon}" />
+                                    <Setter Property="ToolTip" Value="選択した素材のカテゴリ・タグを編集" />
+                                    <Setter Property="Command" Value="{Binding EditSelectedLibraryAssetsCommand}" />
+                                </MultiDataTrigger>
                             </Style.Triggers>
                         </Style>
                     </Button.Style>
@@ -177,9 +208,6 @@
                                 <DataTrigger Binding="{Binding IsSelectionMode}" Value="True">
                                     <Setter Property="Content" Value="完了" />
                                     <Setter Property="Command" Value="{Binding ToggleSelectionModeCommand}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding SelectedPresetTab}" Value="LIB">
-                                    <Setter Property="Visibility" Value="Collapsed" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
@@ -296,6 +324,17 @@
 
         <!-- 4行目: カテゴリタブ。タブを右クリックしてカテゴリを追加・編集 -->
         <Border Grid.Row="3" BorderBrush="{DynamicResource Button.Static.Border}" BorderThickness="0,0,0,1" Padding="6,3">
+            <StackPanel>
+                <TabControl ItemsSource="{Binding LibraryTypes}" SelectedItem="{Binding SelectedLibraryType, Mode=TwoWay}" Height="30" Margin="0,0,0,2">
+                    <TabControl.Style>
+                        <Style TargetType="TabControl" BasedOn="{StaticResource {x:Type TabControl}}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers><DataTrigger Binding="{Binding SelectedPresetTab}" Value="LIB"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers>
+                        </Style>
+                    </TabControl.Style>
+                    <TabControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></TabControl.ItemsPanel>
+                    <TabControl.ItemContainerStyle><Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}"><Setter Property="Padding" Value="10,2" /><Setter Property="MinWidth" Value="44" /></Style></TabControl.ItemContainerStyle>
+                </TabControl>
             <ScrollViewer x:Name="CategoryTabsScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                           CanContentScroll="False" PreviewMouseWheel="CategoryTabs_PreviewMouseWheel">
                 <TabControl x:Name="CategoryTabs" ItemsSource="{Binding Categories}" SelectedItem="{Binding SelectedCategoryItem, Mode=TwoWay}"
@@ -303,7 +342,13 @@
                             PreviewMouseMove="CategoryTabs_PreviewMouseMove"
                             PreviewMouseLeftButtonUp="CategoryTabs_PreviewMouseLeftButtonUp"
                             ToolTip="カテゴリタブをドラッグして並び替えできます"
-                            Height="38" Style="{DynamicResource {x:Type TabControl}}">
+                            Height="34">
+                    <TabControl.Style>
+                        <Style TargetType="TabControl" BasedOn="{StaticResource {x:Type TabControl}}">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers><DataTrigger Binding="{Binding SelectedPresetTab}" Value="LIB"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers>
+                        </Style>
+                    </TabControl.Style>
                     <TabControl.ItemsPanel>
                         <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
                     </TabControl.ItemsPanel>
@@ -329,9 +374,20 @@
                     </TabControl.ItemContainerStyle>
                 </TabControl>
             </ScrollViewer>
+            </StackPanel>
         </Border>
 
         <!-- 5行目: プリセットカード一覧 (スクロール可能) -->
+        <Border Grid.Row="4" BorderThickness="2" Padding="2">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="BorderBrush" Value="Transparent" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSelectionMode}" Value="True"><Setter Property="BorderBrush" Value="#55C878" /></DataTrigger>
+                        <DataTrigger Binding="{Binding SelectedPresetTab}" Value="LIB"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
         <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="4">
             <ScrollViewer.Style>
                 <Style TargetType="ScrollViewer" BasedOn="{StaticResource {x:Type ScrollViewer}}">
@@ -544,7 +600,19 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </ScrollViewer>
+        </Border>
 
+        <Border Grid.Row="4" BorderThickness="2" Padding="2">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="BorderBrush" Value="Transparent" />
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSelectionMode}" Value="True"><Setter Property="BorderBrush" Value="#55C878" /></DataTrigger>
+                        <DataTrigger Binding="{Binding SelectedPresetTab}" Value="LIB"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
         <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="4">
             <ScrollViewer.Style>
                 <Style TargetType="ScrollViewer" BasedOn="{StaticResource {x:Type ScrollViewer}}">
@@ -554,61 +622,182 @@
                     </Style.Triggers>
                 </Style>
             </ScrollViewer.Style>
-            <ItemsControl ItemsSource="{Binding VisibleLibraryAssets}">
+            <StackPanel>
+            <ItemsControl ItemsSource="{Binding VisibleAudioLibraryAssets}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><StackPanel Orientation="Vertical" /></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Margin="2,1,2,2" Padding="3" Background="{Binding Source={StaticResource Proxy}, Path=Data.PreviewBackgroundBrush}"
+                                PreviewMouseLeftButtonDown="LibraryAsset_MouseLeftButtonDown" ToolTip="クリック: プレビュー / ダブルクリック: タイムラインに追加">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="BorderBrush" Value="{DynamicResource Button.Static.Border}" />
+                                    <Setter Property="BorderThickness" Value="3" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                            <Setter Property="BorderBrush" Value="#55C878" />
+                                        <Setter Property="BorderThickness" Value="3" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <Border.ContextMenu>
+                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                    <MenuItem Header="個別音量を設定..." Click="LibrarySetVolume_Click" />
+                                    <MenuItem Header="カテゴリを設定..." Click="LibrarySetCategory_Click" />
+                                    <MenuItem Header="ライブラリから削除" Click="LibraryRemoveAsset_Click" />
+                                </ContextMenu>
+                            </Border.ContextMenu>
+                            <Grid MinHeight="58" MaxHeight="76">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="1" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0">
+                                    <TextBlock Text="{Binding Name}" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Category}" FontSize="9" Opacity="0.65" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Border Grid.Row="1" Background="{DynamicResource Button.Static.Border}" Margin="0,3" />
+                                <Grid Grid.Row="2" Margin="0,2,0,0" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="190" /></Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Height="28" Margin="0,0,8,0" Background="{Binding Source={StaticResource Proxy}, Path=Data.PreviewBackgroundBrush}" ClipToBounds="True">
+                                        <Image Source="{Binding Thumbnail}" Stretch="Fill" />
+                                    </Border>
+                                    <Grid Grid.Column="1">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="54" /></Grid.ColumnDefinitions>
+                                        <ymmc:TextBoxSlider Grid.Column="0" Grid.ColumnSpan="2" Width="190" HorizontalAlignment="Right"
+                                                            Min="0" Max="400" DefaultMin="0" DefaultMax="100"
+                                                            Value="{Binding VolumePercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                            Unit="%" IsUnitVisible="True" StringFormat="F1" Delta="0.1"
+                                                            ToolTip="YMM4音量。初期範囲は0～100%、上限到達時は100→200→400%へ拡張" />
+                                    </Grid>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <ItemsControl ItemsSource="{Binding VisibleNonAudioLibraryAssets}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border Style="{StaticResource PresetCardStyle}"
-                                Width="{Binding Source={StaticResource Proxy}, Path=Data.PresetCardWidth}"
-                                PreviewMouseLeftButtonDown="LibraryAsset_MouseLeftButtonDown"
+                                <Border Style="{StaticResource LibraryNonAudioCardStyle}"
+                                        Width="{Binding Source={StaticResource Proxy}, Path=Data.PresetCardWidth}"
+                                        PreviewMouseLeftButtonDown="LibraryAsset_MouseLeftButtonDown"
                                 ToolTip="クリック: プレビュー / ダブルクリック: タイムラインに追加">
                             <Border.ContextMenu>
                                 <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
-                                    <MenuItem Header="サムネイル位置を変更..." Click="LibrarySetThumbnailTime_Click" />
+                                    <MenuItem Header="サムネイル位置を変更..." Click="LibrarySetThumbnailTime_Click">
+                                        <MenuItem.Style>
+                                            <Style TargetType="MenuItem">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Type}" Value="動画">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </MenuItem.Style>
+                                    </MenuItem>
+                                    <MenuItem Header="個別音量を設定..." Click="LibrarySetVolume_Click">
+                                        <MenuItem.Style>
+                                            <Style TargetType="MenuItem">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Type}" Value="BGM"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Type}" Value="SE"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Type}" Value="動画"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </MenuItem.Style>
+                                    </MenuItem>
+                                    <MenuItem Header="カテゴリを設定..." Click="LibrarySetCategory_Click" />
                                     <MenuItem Header="ライブラリから削除" Click="LibraryRemoveAsset_Click" />
                                 </ContextMenu>
                             </Border.ContextMenu>
                             <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="{Binding Source={StaticResource Proxy}, Path=Data.PresetPreviewHeight}" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <Border Grid.Row="0" Background="{Binding Source={StaticResource Proxy}, Path=Data.PreviewBackgroundBrush}" ClipToBounds="True">
+                                <Border Grid.Row="0" Grid.Column="0" Background="{Binding Source={StaticResource Proxy}, Path=Data.PreviewBackgroundBrush}" ClipToBounds="True">
                                     <Image Source="{Binding Thumbnail}" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                 </Border>
-                                <StackPanel Grid.Row="1" Margin="5,4,5,6">
+                                <StackPanel Grid.Row="0" Grid.Column="1" Margin="6,4,4,4" Width="92" VerticalAlignment="Center">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="BGM"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                                <DataTrigger Binding="{Binding Type}" Value="SE"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <TextBlock Text="音量 (%)" FontSize="10" />
+                                    <Slider Minimum="0" Maximum="400" Value="{Binding VolumePercent, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBox Text="{Binding VolumePercent, UpdateSourceTrigger=PropertyChanged, StringFormat=F0}" Margin="0,2,0,2" />
+                                    <CheckBox Content="既定値" IsChecked="{Binding UseDefaultVolume, UpdateSourceTrigger=PropertyChanged}" FontSize="10" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="5,4,5,6">
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Text="{Binding TypeLabel}" FontSize="10" Opacity="0.7" />
+                                    <TextBlock FontSize="10" Opacity="0.7">
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="{}{0} / {1}">
+                                                <Binding Path="TypeLabel" />
+                                                <Binding Path="Category" />
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
                                 </StackPanel>
                             </Grid>
                         </Border>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+            </StackPanel>
         </ScrollViewer>
+        </Border>
 
         <!-- 5行目: ステータスバー -->
         <Border Grid.Row="5" BorderBrush="{DynamicResource Button.Static.Border}" BorderThickness="0,1,0,0" Padding="8,3">
             <StackPanel>
-                <Slider x:Name="LibrarySeekSlider" Minimum="0" Maximum="100" Visibility="Collapsed"
-                        ValueChanged="LibrarySeekSlider_ValueChanged" PreviewMouseLeftButtonDown="LibrarySeekSlider_MouseDown"
-                        PreviewMouseLeftButtonUp="LibrarySeekSlider_MouseUp" />
                 <TextBlock Text="{Binding StatusBarMessage}" FontSize="11" Opacity="0.75" TextTrimming="CharacterEllipsis" />
             </StackPanel>
         </Border>
 
         <Popup x:Name="LibraryPreviewPopup" PlacementTarget="{Binding ElementName=RootGrid}" Placement="RelativePoint"
                AllowsTransparency="True" StaysOpen="True" PopupAnimation="Fade" Closed="LibraryPreviewPopup_Closed">
-            <Border Width="320" Height="190" BorderBrush="{DynamicResource Button.Static.Border}" BorderThickness="1"
+            <Border Width="480" Height="350" BorderBrush="{DynamicResource Button.Static.Border}" BorderThickness="1"
                     Background="{DynamicResource Button.Static.Background}" Padding="4">
                 <Grid>
-                    <Image x:Name="LibraryPopupImage" Stretch="Uniform" />
-                    <MediaElement x:Name="LibraryPopupMedia" LoadedBehavior="Manual" UnloadedBehavior="Stop"
-                                  Stretch="Uniform" IsMuted="False" Visibility="Collapsed"
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Image x:Name="LibraryPopupImage" Grid.Row="0" Stretch="Uniform" />
+                    <MediaElement x:Name="LibraryPopupMedia" Grid.Row="0" LoadedBehavior="Manual" UnloadedBehavior="Stop"
+                                  Stretch="Uniform" IsMuted="False" ScrubbingEnabled="True" Visibility="Collapsed"
                                   MediaOpened="LibraryPopupMedia_MediaOpened" MediaEnded="LibraryPopupMedia_MediaEnded"
                                   MediaFailed="LibraryPopupMedia_MediaFailed" />
+                    <Grid Grid.Row="1" Margin="2,6,2,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock x:Name="LibrarySeekTimeText" Grid.Column="0" Text="00:00 / 00:00" VerticalAlignment="Center" MinWidth="92" Margin="0,0,8,0" FontSize="11" Opacity="0.8" />
+                        <Slider x:Name="LibrarySeekSlider" Grid.Column="1" Minimum="0" Maximum="100" Visibility="Collapsed"
+                                VerticalAlignment="Center" ValueChanged="LibrarySeekSlider_ValueChanged"
+                                PreviewMouseLeftButtonDown="LibrarySeekSlider_MouseDown" PreviewMouseLeftButtonUp="LibrarySeekSlider_MouseUp" />
+                        <Button x:Name="LibraryPauseButton" Grid.Column="2" Content=" " Visibility="Collapsed"
+                                ContentTemplate="{StaticResource StopIcon}" ToolTip="停止" Width="30" Height="26"
+                                Margin="8,0,0,0" Padding="5,2" Click="LibraryPauseButton_Click" />
+                    </Grid>
                 </Grid>
             </Border>
         </Popup>

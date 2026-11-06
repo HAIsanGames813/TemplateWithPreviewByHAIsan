@@ -15,6 +15,7 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using System.Windows.Media.Imaging;
 using System.Threading;
+using System.Text.RegularExpressions;
 using TemplateWithPreview.Models;
 using YukkuriMovieMaker.Json;
 using YukkuriMovieMaker.Plugin;
@@ -54,6 +55,7 @@ public class CategoryItemViewModel : INotifyPropertyChanged
 
 public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 {
+    private static readonly string[] LibraryMediaTypes = { "BGM", "SE", "動画", "画像" };
     private readonly PreviewRenderer _renderer = new();
     private List<TextPreset> _rawPresets = new();
     private readonly Dictionary<string, TextPresetItemViewModel> _itemViewModelCache = new();
@@ -63,6 +65,11 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     private readonly List<FileSystemWatcher> _libraryWatchers = new();
     private readonly HashSet<string> _libraryRefreshInProgress = new(StringComparer.OrdinalIgnoreCase);
     private bool _libraryMonitorEnabled;
+    private readonly Dictionary<string, List<string>> _libraryCategories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, double> _libraryDefaultVolumeDb = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["BGM"] = 100, ["SE"] = 100, ["動画"] = 100, ["画像"] = 100
+    };
 
     private string _previewText = "あA";
     private CancellationTokenSource? _previewTextRefreshCts;
@@ -70,7 +77,9 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     private string _statusMessage = "";
     private TextPresetItemViewModel? _selectedPreset;
     private string _selectedCategory = "全て";
+    private readonly Dictionary<string, string> _selectedCategoriesByTab = new(StringComparer.OrdinalIgnoreCase);
     private string _selectedPresetTab = "T";
+    private string _selectedLibraryType = "全て";
     private string _searchQuery = "";
     private string _sortMode = "追加順";
     private bool _sortDescending = true;
@@ -92,6 +101,8 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     private bool _applyOthersTarget = true;
     private bool _isSimpleView;
     private int _autoColorStartEffect;
+    private bool _libraryAutoNormalizeVolume;
+    private double _libraryAutoNormalizeTargetPercent = 100;
 
     public string Title => "テキストプリセット";
 
@@ -106,7 +117,60 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 
     public ObservableCollection<LibraryAsset> LibraryAssets { get; } = new();
     public ObservableCollection<LibraryAsset> VisibleLibraryAssets { get; } = new();
+    public ObservableCollection<LibraryAsset> VisibleAudioLibraryAssets { get; } = new();
+    public ObservableCollection<LibraryAsset> VisibleNonAudioLibraryAssets { get; } = new();
+    public ObservableCollection<string> LibraryTypes { get; } = new(new[] { "全て", "BGM", "SE", "動画", "画像" });
     public ObservableCollection<string> LibraryWatchFolders { get; } = new();
+    public ObservableCollection<string> BgmWatchFolders { get; } = new();
+    public ObservableCollection<string> SeWatchFolders { get; } = new();
+    public ObservableCollection<string> VideoWatchFolders { get; } = new();
+    public ObservableCollection<string> ImageWatchFolders { get; } = new();
+
+    public double BgmDefaultVolumePercent { get => GetDefaultVolumePercent("BGM"); set => SetDefaultVolumePercent("BGM", value); }
+    public double SeDefaultVolumePercent { get => GetDefaultVolumePercent("SE"); set => SetDefaultVolumePercent("SE", value); }
+    public double VideoDefaultVolumePercent { get => GetDefaultVolumePercent("動画"); set => SetDefaultVolumePercent("動画", value); }
+
+    private double GetDefaultVolumePercent(string type) => _libraryDefaultVolumeDb.TryGetValue(type, out var value) ? value : 100;
+    private void SetDefaultVolumePercent(string type, double value)
+    {
+        value = Math.Clamp(value, 0, 400);
+        if (Math.Abs(GetDefaultVolumePercent(type) - value) < 0.001) return;
+        _libraryDefaultVolumeDb[type] = value;
+        OnPropertyChanged(type == "BGM" ? nameof(BgmDefaultVolumePercent) : type == "SE" ? nameof(SeDefaultVolumePercent) : nameof(VideoDefaultVolumePercent));
+        ScheduleSettingsSave();
+    }
+
+    public double GetLibraryVolumePercent(LibraryAsset asset) => asset.UseDefaultVolume ? GetDefaultVolumePercent(asset.Type) : asset.VolumePercent;
+
+    public bool LibraryAutoNormalizeVolume
+    {
+        get => _libraryAutoNormalizeVolume;
+        set { if (_libraryAutoNormalizeVolume == value) return; _libraryAutoNormalizeVolume = value; OnPropertyChanged(); ScheduleSettingsSave(); }
+    }
+
+    public double LibraryAutoNormalizeTargetPercent
+    {
+        get => _libraryAutoNormalizeTargetPercent;
+        set { double normalized = Math.Clamp(value, 1, 400); if (Math.Abs(_libraryAutoNormalizeTargetPercent - normalized) < 0.001) return; _libraryAutoNormalizeTargetPercent = normalized; OnPropertyChanged(); ScheduleSettingsSave(); }
+    }
+
+    private ObservableCollection<string> GetWatchFolders(string type) => type switch
+    {
+        "SE" => SeWatchFolders,
+        "動画" => VideoWatchFolders,
+        "画像" => ImageWatchFolders,
+        _ => BgmWatchFolders
+    };
+
+    private List<string> GetLibraryCategories(string type)
+    {
+        if (!_libraryCategories.TryGetValue(type, out var categories))
+            _libraryCategories[type] = categories = new List<string>();
+        return categories;
+    }
+
+    private static string NormalizeLibraryType(string? type) =>
+        LibraryMediaTypes.Contains(type, StringComparer.OrdinalIgnoreCase) ? type! : "BGM";
 
     public bool LibraryMonitorEnabled
     {
@@ -168,7 +232,7 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         get => _presetCardWidth;
         set
         {
-            double adjusted = Math.Clamp(value, 80, 360);
+            double adjusted = Math.Clamp(value, 80, 400);
             if (Math.Abs(_presetCardWidth - adjusted) < 0.1) return;
             _presetCardWidth = adjusted;
             OnPropertyChanged();
@@ -211,19 +275,46 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             if (_isSelectionMode == value) return;
             _isSelectionMode = value;
             if (!value)
+            {
                 foreach (var item in _itemViewModelCache.Values) item.IsSelected = false;
+                foreach (var asset in LibraryAssets) asset.IsSelected = false;
+            }
             OnPropertyChanged();
             OnPropertyChanged(nameof(SelectedPresetCount));
             OnPropertyChanged(nameof(StatusBarMessage));
         }
     }
 
-    public int SelectedPresetCount => _itemViewModelCache.Values.Count(item => item.IsSelected);
+    public int SelectedPresetCount => SelectedPresetTab == "LIB"
+        ? LibraryAssets.Count(asset => asset.IsSelected)
+        : _itemViewModelCache.Values.Count(item => item.IsSelected);
 
     public void TogglePresetSelection(TextPresetItemViewModel item)
     {
         if (!IsSelectionMode) return;
         item.IsSelected = !item.IsSelected;
+        OnPropertyChanged(nameof(SelectedPresetCount));
+        OnPropertyChanged(nameof(StatusBarMessage));
+    }
+
+    public void ToggleLibrarySelection(LibraryAsset asset, bool rangeSelect = false)
+    {
+        if (!IsSelectionMode) return;
+        if (rangeSelect)
+        {
+            int target = VisibleLibraryAssets.IndexOf(asset);
+            var anchorAsset = LibraryAssets.FirstOrDefault(item => item.IsSelected);
+            int anchor = anchorAsset == null ? -1 : VisibleLibraryAssets.IndexOf(anchorAsset);
+            if (target >= 0 && anchor >= 0)
+            {
+                int start = Math.Min(anchor, target), end = Math.Max(anchor, target);
+                for (int i = start; i <= end; i++) VisibleLibraryAssets[i].IsSelected = true;
+                OnPropertyChanged(nameof(SelectedPresetCount));
+                OnPropertyChanged(nameof(StatusBarMessage));
+                return;
+            }
+        }
+        asset.IsSelected = !asset.IsSelected;
         OnPropertyChanged(nameof(SelectedPresetCount));
         OnPropertyChanged(nameof(StatusBarMessage));
     }
@@ -236,11 +327,31 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             if (_selectedCategory != value)
             {
                 _selectedCategory = value;
+                _selectedCategoriesByTab[_selectedPresetTab] = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(SelectedCategoryItem));
                 ApplyCategoryFilter();
                 if (SelectedPresetTab != "LIB") _ = RefreshAllPreviewsAsync();
                 ScheduleSettingsSave();
+            }
+        }
+    }
+
+    public string SelectedLibraryType
+    {
+        get => _selectedLibraryType;
+        set
+        {
+            string normalized = LibraryTypes.Contains(value, StringComparer.OrdinalIgnoreCase) ? value : "全て";
+            if (_selectedLibraryType == normalized) return;
+            _selectedLibraryType = normalized;
+            OnPropertyChanged();
+            if (SelectedPresetTab == "LIB")
+            {
+                _selectedCategory = "全て";
+                OnPropertyChanged(nameof(SelectedCategory));
+                UpdateCategories();
+                ApplyCategoryFilter();
             }
         }
     }
@@ -276,6 +387,8 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         {
             if (_selectedPresetTab != value)
             {
+                string previousTab = _selectedPresetTab;
+                _selectedCategoriesByTab[previousTab] = _selectedCategory;
                 _selectedPresetTab = value switch { "FX" => "FX", "TPL" => "TPL", "LIB" => "LIB", _ => "T" };
                 OnPropertyChanged();
                 int index = _selectedPresetTab switch { "FX" => 1, "TPL" => 2, "LIB" => 3, _ => 0 };
@@ -284,7 +397,8 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
                     _presetTabIndex = index;
                     OnPropertyChanged(nameof(PresetTabIndex));
                 }
-                _selectedCategory = "全て";
+                _selectedCategory = _selectedCategoriesByTab.TryGetValue(_selectedPresetTab, out var rememberedCategory)
+                    ? rememberedCategory : "全て";
                 OnPropertyChanged(nameof(SelectedCategory));
                 UpdateCategories();
                 ApplyCategoryFilter();
@@ -522,6 +636,7 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     public ICommand ToggleSelectionModeCommand { get; }
     public ICommand DeleteSelectedPresetsCommand { get; }
     public ICommand ExportSelectedPresetsCommand { get; }
+    public ICommand EditSelectedLibraryAssetsCommand { get; }
     public ICommand RefreshCommand { get; }
     public ICommand AddLibraryFilesCommand { get; }
     public ICommand SelectPatternSlotCommand { get; }
@@ -535,7 +650,15 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     public ICommand OpenPreviewStorageDirectoryCommand { get; }
     public ICommand ChangePreviewStorageDirectoryCommand { get; }
     public ICommand DeleteUnusedPreviewDataCommand { get; }
-    public string PreviewStorageDirectory => PresetStorage.PreviewImageDirectory;
+    public string PreviewStorageDirectory
+    {
+        get => PresetStorage.PreviewImageDirectory;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && !string.Equals(Path.GetFullPath(value), Path.GetFullPath(PresetStorage.PreviewImageDirectory), StringComparison.OrdinalIgnoreCase))
+                ApplyPreviewStorageDirectory(value);
+        }
+    }
 
     public PreviewPresetViewModel()
     {
@@ -580,12 +703,18 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         ToggleSelectionModeCommand = new RelayCommand(_ => IsSelectionMode = !IsSelectionMode);
         DeleteSelectedPresetsCommand = new RelayCommand(_ => DeleteSelectedPresets());
         ExportSelectedPresetsCommand = new RelayCommand(_ => ExportSelectedPresets());
+        EditSelectedLibraryAssetsCommand = new RelayCommand(_ => EditSelectedLibraryAssets());
         RefreshCommand = new RelayCommand(_ =>
         {
             if (SelectedPresetTab == "LIB")
             {
-                ApplyCategoryFilter();
-                _ = RefreshLibraryWatchAssetsAsync();
+                PruneMissingLibraryAssets(save: true);
+                if (LibraryMonitorEnabled) _ = RefreshLibraryWatchAssetsAsync();
+                else
+                {
+                    UpdateCategories();
+                    ApplyCategoryFilter();
+                }
             }
             else _ = RefreshAllPreviewsAsync();
         });
@@ -626,7 +755,15 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         SavePluginSettings();
         return new ToolState();
     }
-    public void LoadState(ToolState stateData) { }
+    public void LoadState(ToolState stateData)
+    {
+        // YMM4がツールを再表示する際、XAMLバインディングが初期値を先に反映する場合があるため、
+        // プラグイン設定を最後に再適用して直前のタブ・カテゴリを維持する。
+        RestorePluginSettings();
+        UpdateCategories();
+        ApplyCategoryFilter();
+        UpdateLibraryWatchers();
+    }
 
     private void RestorePluginSettings()
     {
@@ -638,9 +775,32 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         _selectedPresetTab = settings.SelectedPresetTab switch { "FX" => "FX", "TPL" => "TPL", "LIB" => "LIB", _ => "T" };
         _presetTabIndex = _selectedPresetTab switch { "FX" => 1, "TPL" => 2, "LIB" => 3, _ => 0 };
         _libraryMonitorEnabled = settings.LibraryMonitorEnabled;
+        _libraryAutoNormalizeVolume = settings.LibraryAutoNormalizeVolume;
+        _libraryAutoNormalizeTargetPercent = Math.Clamp(settings.LibraryAutoNormalizeTargetPercent <= 0 ? 100 : settings.LibraryAutoNormalizeTargetPercent, 1, 400);
+        foreach (string type in new[] { "BGM", "SE", "動画" })
+            if (settings.LibraryDefaultVolumePercent != null && settings.LibraryDefaultVolumePercent.TryGetValue(type, out var savedVolume))
+                _libraryDefaultVolumeDb[type] = Math.Clamp(savedVolume, 0, 400);
+            else if (settings.LibraryDefaultVolumeDb != null && settings.LibraryDefaultVolumeDb.TryGetValue(type, out savedVolume))
+                _libraryDefaultVolumeDb[type] = Math.Clamp((savedVolume + 100) * 100 / 124, 0, 100);
         LibraryWatchFolders.Clear();
         foreach (string folder in settings.LibraryWatchFolders ?? new List<string>())
             if (!string.IsNullOrWhiteSpace(folder) && !LibraryWatchFolders.Contains(folder, StringComparer.OrdinalIgnoreCase)) LibraryWatchFolders.Add(folder);
+        foreach (string type in LibraryMediaTypes)
+        {
+            var folders = GetWatchFolders(type);
+            folders.Clear();
+            if (settings.LibraryWatchFoldersByType != null && settings.LibraryWatchFoldersByType.TryGetValue(type, out var savedFolders))
+                foreach (string folder in savedFolders ?? new List<string>())
+                    if (!string.IsNullOrWhiteSpace(folder) && !folders.Contains(folder, StringComparer.OrdinalIgnoreCase)) folders.Add(folder);
+            // 旧形式の監視フォルダはBGM側へ引き継ぐ
+            if (type == "BGM" && folders.Count == 0)
+                foreach (string folder in LibraryWatchFolders)
+                    if (!folders.Contains(folder, StringComparer.OrdinalIgnoreCase)) folders.Add(folder);
+            if (settings.LibraryCategories != null && settings.LibraryCategories.TryGetValue(type, out var savedCategories))
+                _libraryCategories[type] = (savedCategories ?? new List<string>()).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            else
+                _libraryCategories[type] = new List<string>();
+        }
         _selectedCategory = string.IsNullOrWhiteSpace(settings.SelectedCategory) ? "全て" : settings.SelectedCategory;
         _searchQuery = settings.SearchQuery ?? "";
         _sortMode = settings.SortMode == "名前順" ? "名前順" : "追加順";
@@ -684,6 +844,11 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             TemplateOnlySelectedTypes = _templateOnlySelectedTypes,
             LibraryMonitorEnabled = _libraryMonitorEnabled,
             LibraryWatchFolders = LibraryWatchFolders.ToList(),
+            LibraryWatchFoldersByType = LibraryMediaTypes.ToDictionary(type => type, type => GetWatchFolders(type).ToList(), StringComparer.OrdinalIgnoreCase),
+            LibraryCategories = LibraryMediaTypes.ToDictionary(type => type, type => GetLibraryCategories(type).ToList(), StringComparer.OrdinalIgnoreCase),
+            LibraryDefaultVolumePercent = _libraryDefaultVolumeDb.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+            LibraryAutoNormalizeVolume = _libraryAutoNormalizeVolume,
+            LibraryAutoNormalizeTargetPercent = _libraryAutoNormalizeTargetPercent,
             ApplyEffectsTarget = _applyEffectsTarget,
             ApplyFontTarget = _applyFontTarget,
             ApplyPositionTarget = _applyPositionTarget,
@@ -695,12 +860,14 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     private void LoadPresets()
     {
         _rawPresets = PresetStorage.LoadPresets();
+        var loadedLibrary = PresetStorage.LoadLibraryAssets();
         LibraryAssets.Clear();
-        foreach (var asset in PresetStorage.LoadLibraryAssets())
+        foreach (var asset in loadedLibrary)
         {
             if (!File.Exists(asset.Path)) continue;
-            LibraryAssets.Add(asset);
+            RegisterLibraryAsset(asset);
         }
+        if (LibraryAssets.Count != loadedLibrary.Count) PresetStorage.SaveLibraryAssets(LibraryAssets);
         _ = LoadSavedLibraryThumbnailsAsync();
         _textCategories = PresetStorage.LoadCategories(forEffects: false);
         _effectCategories = PresetStorage.LoadCategories(forEffects: true);
@@ -721,14 +888,25 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     {
         if (SelectedPresetTab == "LIB")
         {
-            var libraryCategories = new[] { "全て", "BGM", "SE", "動画", "画像" };
+            var libraryCategories = new List<string> { "全て" };
+            IEnumerable<string> types = SelectedLibraryType == "全て" ? LibraryMediaTypes : new[] { SelectedLibraryType };
+            foreach (string type in types)
+            {
+                var categories = GetLibraryCategories(type);
+                foreach (string category in LibraryAssets.Where(asset => string.Equals(asset.Type, type, StringComparison.OrdinalIgnoreCase))
+                    .Select(asset => asset.Category).Where(category => !string.IsNullOrWhiteSpace(category))
+                    .Distinct(StringComparer.OrdinalIgnoreCase))
+                    if (!categories.Contains(category, StringComparer.OrdinalIgnoreCase)) categories.Add(category);
+                libraryCategories.AddRange(categories);
+            }
             if (!libraryCategories.Contains(SelectedCategory, StringComparer.OrdinalIgnoreCase))
             {
                 _selectedCategory = "全て";
+                _selectedCategoriesByTab[SelectedPresetTab] = _selectedCategory;
                 OnPropertyChanged(nameof(SelectedCategory));
             }
             Categories.Clear();
-            foreach (string category in libraryCategories)
+            foreach (string category in libraryCategories.Distinct(StringComparer.OrdinalIgnoreCase))
                 Categories.Add(new CategoryItemViewModel(category, string.Equals(category, SelectedCategory, StringComparison.OrdinalIgnoreCase)));
             OnPropertyChanged(nameof(SelectedCategoryItem));
             return;
@@ -777,6 +955,7 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         if (!sorted.Contains(SelectedCategory, StringComparer.OrdinalIgnoreCase))
         {
             _selectedCategory = "全て";
+            _selectedCategoriesByTab[SelectedPresetTab] = _selectedCategory;
             OnPropertyChanged(nameof(SelectedCategory));
         }
 
@@ -823,22 +1002,32 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         if (SelectedPresetTab == "LIB")
         {
             IEnumerable<LibraryAsset> assets = LibraryAssets.Where(asset =>
-                (SelectedCategory == "全て" || string.Equals(asset.Type, SelectedCategory, StringComparison.OrdinalIgnoreCase)) &&
+                (SelectedLibraryType == "全て" || string.Equals(asset.Type, SelectedLibraryType, StringComparison.OrdinalIgnoreCase)) &&
+                (SelectedCategory == "全て" || string.Equals(asset.Category, SelectedCategory, StringComparison.OrdinalIgnoreCase)) &&
                 (string.IsNullOrWhiteSpace(SearchQuery) || asset.Name.Contains(SearchQuery.Trim(), StringComparison.CurrentCultureIgnoreCase)));
             assets = (_sortMode, _sortDescending) switch
             {
                 ("名前順", false) => assets.OrderBy(asset => asset.Name, StringComparer.CurrentCultureIgnoreCase),
                 ("名前順", true) => assets.OrderByDescending(asset => asset.Name, StringComparer.CurrentCultureIgnoreCase),
-                ("追加順", false) => assets.OrderByDescending(asset => asset.AddedAt),
+                ("追加順", false) => assets.OrderBy(asset => asset.AddedAt),
                 _ => assets.OrderByDescending(asset => asset.AddedAt)
             };
             VisibleLibraryAssets.Clear();
-            foreach (var asset in assets) VisibleLibraryAssets.Add(asset);
+            VisibleAudioLibraryAssets.Clear();
+            VisibleNonAudioLibraryAssets.Clear();
+            foreach (var asset in assets)
+            {
+                VisibleLibraryAssets.Add(asset);
+                if (asset.Type is "BGM" or "SE") VisibleAudioLibraryAssets.Add(asset);
+                else VisibleNonAudioLibraryAssets.Add(asset);
+            }
             Presets.Clear();
             return;
         }
 
         VisibleLibraryAssets.Clear();
+        VisibleAudioLibraryAssets.Clear();
+        VisibleNonAudioLibraryAssets.Clear();
         IEnumerable<TextPreset> filtered = _rawPresets.Where(p => PresetMatchesCurrentTab(p) && MatchesSelectedCategory(p) &&
             MatchesSearch(p) && MatchesItemTypeFilter(p));
         filtered = (_sortMode, _sortDescending) switch
@@ -1429,13 +1618,21 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             items,
             targetPreset?.Tags ?? "",
             _templateCategories.Concat(existingTemplatePresets.SelectMany(preset => preset.GetCategoryList())),
-            existingTemplatePresets.SelectMany(preset => preset.GetTagList()))
+            existingTemplatePresets.SelectMany(preset => preset.GetTagList()),
+            existingTemplatePresets,
+            targetPreset)
         {
             Owner = Application.Current?.MainWindow
         };
         if (dialog.ShowDialog() != true) return;
+        items = dialog.SelectedItems.ToList();
+        if (items.Count == 0)
+        {
+            StatusMessage = "登録するアイテムが選択されていません";
+            return;
+        }
 
-        var target = targetPreset;
+        var target = dialog.TargetPreset ?? targetPreset;
         bool isNew = target == null;
         if (target == null)
         {
@@ -1449,7 +1646,8 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             };
         }
 
-        int slot = targetPattern?.Slot ?? target.Patterns.FirstOrDefault(p => string.Equals(p.SampleColor, dialog.SampleColorHex, StringComparison.OrdinalIgnoreCase))?.Slot ?? target.GetNextFreeSlot();
+        // 編集時は同じスロットを更新し、新規登録・既存親への追加時は空きスロットへ新しいパターンを追加する。
+        int slot = targetPattern?.Slot ?? target.GetNextFreeSlot();
         if (slot < 0)
         {
             StatusMessage = $"パターン数が上限({PresetPattern.MaxPatternCount})に達しています";
@@ -1758,46 +1956,84 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         return true;
     }
 
-    public void AddLibraryWatchFolder()
+    public void AddLibraryWatchFolder(string type = "BGM")
     {
-        var dialog = new OpenFolderDialog { Title = "素材ライブラリとして監視するフォルダーを選択してください" };
+        type = NormalizeLibraryType(type);
+        var dialog = new OpenFolderDialog { Title = $"{type}として監視するフォルダーを選択してください" };
         if (dialog.ShowDialog(Application.Current?.MainWindow) != true || string.IsNullOrWhiteSpace(dialog.FolderName)) return;
         string path = Path.GetFullPath(dialog.FolderName);
+        var folders = GetWatchFolders(type);
+        if (!folders.Contains(path, StringComparer.OrdinalIgnoreCase)) folders.Add(path);
         if (!LibraryWatchFolders.Contains(path, StringComparer.OrdinalIgnoreCase)) LibraryWatchFolders.Add(path);
         UpdateLibraryWatchers();
         ScheduleSettingsSave();
     }
 
-    public void RemoveLibraryWatchFolder(string? path)
+    public void RemoveLibraryWatchFolder(string? path, string type = "BGM")
     {
         if (string.IsNullOrWhiteSpace(path)) return;
-        var existing = LibraryWatchFolders.FirstOrDefault(folder => string.Equals(folder, path, StringComparison.OrdinalIgnoreCase));
+        type = NormalizeLibraryType(type);
+        var folders = GetWatchFolders(type);
+        var existing = folders.FirstOrDefault(folder => string.Equals(folder, path, StringComparison.OrdinalIgnoreCase));
         if (existing == null) return;
-        LibraryWatchFolders.Remove(existing);
+        folders.Remove(existing);
+        if (!LibraryMediaTypes.Any(mediaType => GetWatchFolders(mediaType).Contains(existing, StringComparer.OrdinalIgnoreCase))) LibraryWatchFolders.Remove(existing);
         UpdateLibraryWatchers();
         ScheduleSettingsSave();
     }
 
     private void AddLibraryFiles()
     {
-        var dialog = new OpenFileDialog
+        string? mediaType = SelectLibraryMediaType();
+        if (mediaType == null) return;
+
+        string audioExtensions = "*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac;*.wma";
+        string videoExtensions = "*.mp4;*.mov;*.avi;*.mkv;*.wmv;*.webm;*.m4v";
+        string imageExtensions = "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff";
+        string filter = mediaType is "BGM" or "SE"
+            ? $"音声ファイル・音声付き動画|{audioExtensions};{videoExtensions}|音声ファイル|{audioExtensions}|動画ファイル|{videoExtensions}"
+            : mediaType == "動画"
+                ? $"動画ファイル|{videoExtensions}"
+                : $"画像ファイル|{imageExtensions}";
+        var dialog = new OpenFileDialog { Title = $"{mediaType}素材を追加", Multiselect = true, Filter = filter };
+        if (dialog.ShowDialog(Application.Current?.MainWindow) != true) return;
+        _ = AddLibraryFilesAsync(dialog.FileNames, mediaType);
+    }
+
+    private static string? SelectLibraryMediaType()
+    {
+        var dialog = new Window
         {
-            Title = "素材を追加",
-            Multiselect = true,
-            Filter = "メディア素材|*.mp3;*.wav;*.m4a;*.aac;*.ogg;*.flac;*.wma;*.mp4;*.mov;*.avi;*.mkv;*.wmv;*.webm;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.psd|すべてのファイル|*.*"
+            Title = "追加する素材の種類",
+            Width = 300,
+            Height = 220,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = Application.Current?.MainWindow
         };
-        if (dialog.ShowDialog() != true) return;
-
-        bool containsAudio = dialog.FileNames.Any(IsLibraryAudioFile);
-        string audioType = "BGM";
-        if (containsAudio)
+        var panel = new StackPanel { Margin = new Thickness(14) };
+        panel.Children.Add(new TextBlock { Text = "ファイルの種類を選択してください", Margin = new Thickness(0, 0, 0, 10) });
+        foreach (string type in LibraryMediaTypes)
         {
-            var choice = MessageBox.Show("選択した音声ファイルをBGMとして登録しますか？\n\n「いいえ」を選ぶとSEとして登録します。", "音声素材の種類", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-            if (choice == MessageBoxResult.Cancel) return;
-            audioType = choice == MessageBoxResult.Yes ? "BGM" : "SE";
+            var button = new Button { Content = type, Tag = type, Margin = new Thickness(0, 2, 0, 2), Padding = new Thickness(8, 4, 8, 4) };
+            button.Click += (_, _) => { dialog.Tag = button.Tag; dialog.DialogResult = true; };
+            panel.Children.Add(button);
         }
+        dialog.Content = panel;
+        return dialog.ShowDialog() == true ? dialog.Tag as string : null;
+    }
 
-        _ = AddLibraryFilesAsync(dialog.FileNames, audioType);
+    private void RegisterLibraryAsset(LibraryAsset asset)
+    {
+        asset.PropertyChanged -= LibraryAsset_PropertyChanged;
+        asset.PropertyChanged += LibraryAsset_PropertyChanged;
+        LibraryAssets.Add(asset);
+    }
+
+    private void LibraryAsset_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(LibraryAsset.VolumePercent) or nameof(LibraryAsset.UseDefaultVolume))
+            PresetStorage.SaveLibraryAssets(LibraryAssets);
     }
 
     private async Task AddLibraryFilesAsync(IEnumerable<string> filePaths, string audioType)
@@ -1809,7 +2045,17 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             string? type = GetLibraryAssetType(filePath, audioType);
             if (type == null) continue;
             var asset = new LibraryAsset { Path = Path.GetFullPath(filePath), Type = type };
-            LibraryAssets.Add(asset);
+            if (_libraryAutoNormalizeVolume && (type is "BGM" or "SE" or "動画"))
+            {
+                double? peakDb = await AnalyzePeakVolumeDbAsync(asset.Path);
+                if (peakDb.HasValue)
+                {
+                    double peakPercent = 100 * Math.Pow(10, peakDb.Value / 20.0);
+                    asset.VolumePercent = Math.Clamp(_libraryAutoNormalizeTargetPercent / Math.Max(peakPercent, 0.001) * 100, 0, 400);
+                    asset.UseDefaultVolume = false;
+                }
+            }
+            RegisterLibraryAsset(asset);
             await LoadLibraryAssetThumbnailAsync(asset, force: true);
             added++;
         }
@@ -1817,6 +2063,37 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         UpdateCategories();
         ApplyCategoryFilter();
         StatusMessage = added == 0 ? "追加できる素材がありませんでした" : $"素材を{added}件ライブラリに追加しました";
+    }
+
+    private static async Task<double?> AnalyzePeakVolumeDbAsync(string path)
+    {
+        string ffmpeg = Path.Combine(Environment.GetEnvironmentVariable("YMM4DirPath") ?? @"C:\Users\ADMIN\YukkuriMovieMaker_v4_Lite", "Resources", "bin", "x64", "ffmpeg", "ffmpeg.exe");
+        if (!File.Exists(ffmpeg)) return null;
+        try
+        {
+            var startInfo = new ProcessStartInfo(ffmpeg)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            };
+            startInfo.ArgumentList.Add("-hide_banner");
+            startInfo.ArgumentList.Add("-i");
+            startInfo.ArgumentList.Add(path);
+            startInfo.ArgumentList.Add("-af");
+            startInfo.ArgumentList.Add("volumedetect");
+            startInfo.ArgumentList.Add("-f");
+            startInfo.ArgumentList.Add("null");
+            startInfo.ArgumentList.Add("NUL");
+            using var process = Process.Start(startInfo);
+            if (process == null) return null;
+            string error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var match = Regex.Match(error, @"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", RegexOptions.IgnoreCase);
+            return match.Success && double.TryParse(match.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value) ? value : null;
+        }
+        catch { return null; }
     }
 
     private async Task LoadSavedLibraryThumbnailsAsync()
@@ -1849,19 +2126,7 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             else if (asset.Type == "動画")
                 image = await EffectPreviewVideoGenerator.ExtractThumbnailAsync(asset.Path, asset.ThumbnailTimeSeconds);
             else
-            {
-                try
-                {
-                    var bitmap = new BitmapImage();
-                    bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.UriSource = new Uri(asset.Path); bitmap.EndInit(); bitmap.Freeze();
-                    image = bitmap;
-                }
-                catch
-                {
-                    // PSDなどWPF標準デコーダーで読めない画像はYMM4付属FFmpegに試させる。
-                    image = await EffectPreviewVideoGenerator.ExtractThumbnailAsync(asset.Path, 0);
-                }
-            }
+                image = await LoadLibraryImageThumbnailAsync(asset.Path);
             if (image == null) return;
             asset.Thumbnail = image;
             asset.ThumbnailPath = PresetStorage.SaveLibraryThumbnail(asset.Id, image);
@@ -1872,38 +2137,60 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         }
     }
 
+    private static async Task<BitmapSource?> LoadLibraryImageThumbnailAsync(string path)
+    {
+        try
+        {
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.UriSource = new Uri(path);
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch { }
+
+        var shell = ShellThumbnail.TryGet(path, 320, 180);
+        if (shell != null) return shell;
+        return await EffectPreviewVideoGenerator.ExtractThumbnailAsync(path, 0);
+    }
+
     private void UpdateLibraryWatchers()
     {
         foreach (var watcher in _libraryWatchers) { try { watcher.Dispose(); } catch { } }
         _libraryWatchers.Clear();
         if (LibraryMonitorEnabled)
         {
-            foreach (string path in LibraryWatchFolders.ToList())
+            foreach (string type in LibraryMediaTypes)
             {
-                if (!Directory.Exists(path)) continue;
-                try
+                foreach (string path in GetWatchFolders(type).ToList())
                 {
-                    var watcher = new FileSystemWatcher(path)
+                    if (!Directory.Exists(path)) continue;
+                    try
                     {
-                        IncludeSubdirectories = true,
-                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
-                        EnableRaisingEvents = true
-                    };
-                    watcher.Created += (_, _) => ScheduleLibraryWatchRefresh();
-                    watcher.Deleted += (_, _) => ScheduleLibraryWatchRefresh();
-                    watcher.Renamed += (_, _) => ScheduleLibraryWatchRefresh();
-                    watcher.Changed += (_, _) => ScheduleLibraryWatchRefresh();
-                    watcher.Error += (_, _) => ScheduleLibraryWatchRefresh();
-                    _libraryWatchers.Add(watcher);
+                        var watcher = new FileSystemWatcher(path)
+                        {
+                            IncludeSubdirectories = true,
+                            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                            EnableRaisingEvents = true
+                        };
+                        watcher.Created += (_, _) => ScheduleLibraryWatchRefresh();
+                        watcher.Deleted += (_, _) => ScheduleLibraryWatchRefresh();
+                        watcher.Renamed += (_, _) => ScheduleLibraryWatchRefresh();
+                        watcher.Changed += (_, _) => ScheduleLibraryWatchRefresh();
+                        watcher.Error += (_, _) => ScheduleLibraryWatchRefresh();
+                        _libraryWatchers.Add(watcher);
+                    }
+                    catch (Exception ex) { Debug.WriteLine($"Could not watch {type} library folder: {ex}"); }
                 }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Could not watch library folder: {ex}"); }
             }
             ScheduleLibraryWatchRefresh();
         }
         else
         {
-            foreach (var asset in LibraryAssets.Where(asset => asset.IsWatchFolderAsset).ToList())
-                if (!LibraryWatchFolders.Any(folder => IsPathWithin(asset.Path, folder))) LibraryAssets.Remove(asset);
+            RemoveLibraryAssets(LibraryAssets.Where(asset => asset.IsWatchFolderAsset));
+            PruneMissingLibraryAssets(save: false);
             PresetStorage.SaveLibraryAssets(LibraryAssets);
             UpdateCategories();
             ApplyCategoryFilter();
@@ -1925,40 +2212,47 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         try
         {
             var discovered = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string folder in LibraryWatchFolders.ToList())
+            foreach (string type in LibraryMediaTypes)
             {
-                if (!Directory.Exists(folder)) continue;
-                try
+                foreach (string folder in GetWatchFolders(type).ToList())
                 {
-                    foreach (string path in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
-                        if (GetLibraryAssetType(path, "BGM") != null && !discovered.ContainsKey(path)) discovered[path] = folder;
+                    if (!Directory.Exists(folder)) continue;
+                    try
+                    {
+                        foreach (string path in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+                            if (GetLibraryAssetType(path, type) != null && !discovered.ContainsKey(path)) discovered[path] = $"{type}|{folder}";
+                    }
+                    catch (Exception ex) { Debug.WriteLine($"Could not scan {type} library watch folder: {ex}"); }
                 }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Could not scan library watch folder: {ex}"); }
             }
 
-            foreach (var asset in LibraryAssets.Where(asset => asset.IsWatchFolderAsset).ToList())
-            {
-                if (discovered.ContainsKey(asset.Path)) continue;
-                LibraryAssets.Remove(asset);
-                try { if (!string.IsNullOrWhiteSpace(asset.ThumbnailPath) && File.Exists(asset.ThumbnailPath)) File.Delete(asset.ThumbnailPath); } catch { }
-            }
+            RemoveLibraryAssets(LibraryAssets.Where(asset => asset.IsWatchFolderAsset && !discovered.ContainsKey(asset.Path)));
+            PruneMissingLibraryAssets(save: false);
 
             foreach (var entry in discovered)
             {
                 var asset = LibraryAssets.FirstOrDefault(candidate => string.Equals(candidate.Path, entry.Key, StringComparison.OrdinalIgnoreCase));
-                string type = GetLibraryAssetType(entry.Key, InferWatchAudioType(entry.Key, entry.Value))!;
-                if (asset == null)
+                if (asset != null)
                 {
-                    asset = new LibraryAsset { Path = Path.GetFullPath(entry.Key), Type = type, IsWatchFolderAsset = true, WatchFolderPath = entry.Value };
-                    LibraryAssets.Add(asset);
-                    await LoadLibraryAssetThumbnailAsync(asset, force: true);
+                    if (asset.IsWatchFolderAsset)
+                    {
+                        var parts = entry.Value.Split('|', 2);
+                        string type = parts[0];
+                        string root = parts.Length > 1 ? parts[1] : parts[0];
+                        asset.WatchFolderPath = root;
+                        asset.WatchFolderType = type;
+                        if (asset.Type != type) asset.Type = type;
+                        if (string.IsNullOrWhiteSpace(asset.Category)) asset.Category = InferWatchCategory(entry.Key, root);
+                    }
+                    continue;
                 }
-                else
-                {
-                    asset.IsWatchFolderAsset = true;
-                    asset.WatchFolderPath = entry.Value;
-                    if (asset.Type != type) asset.Type = type;
-                }
+
+                var entryParts = entry.Value.Split('|', 2);
+                string newType = entryParts[0];
+                string rootPath = entryParts.Length > 1 ? entryParts[1] : entryParts[0];
+                asset = new LibraryAsset { Path = Path.GetFullPath(entry.Key), Type = newType, Category = InferWatchCategory(entry.Key, rootPath), IsWatchFolderAsset = true, WatchFolderPath = rootPath, WatchFolderType = newType };
+                RegisterLibraryAsset(asset);
+                await LoadLibraryAssetThumbnailAsync(asset, force: true);
             }
             PresetStorage.SaveLibraryAssets(LibraryAssets);
             UpdateCategories();
@@ -1967,11 +2261,11 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         finally { _libraryRefreshInProgress.Remove("refresh"); }
     }
 
-    private static string InferWatchAudioType(string path, string root)
+    private static string InferWatchCategory(string path, string root)
     {
         string relative = Path.GetRelativePath(root, path);
-        return relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .Any(part => part.Contains("SE", StringComparison.OrdinalIgnoreCase) || part.Contains("効果音", StringComparison.OrdinalIgnoreCase)) ? "SE" : "BGM";
+        string[] parts = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length > 1 ? parts[0] : "";
     }
 
     private static bool IsPathWithin(string file, string folder)
@@ -1990,9 +2284,9 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
     private static string? GetLibraryAssetType(string path, string audioType)
     {
         string extension = Path.GetExtension(path);
-        if (IsLibraryAudioFile(path)) return audioType;
-        if (new[] { ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm", ".m4v" }.Contains(extension, StringComparer.OrdinalIgnoreCase)) return "動画";
-        if (new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".psd" }.Contains(extension, StringComparer.OrdinalIgnoreCase)) return "画像";
+        if (IsLibraryAudioFile(path)) return audioType is "BGM" or "SE" ? audioType : null;
+        if (new[] { ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm", ".m4v" }.Contains(extension, StringComparer.OrdinalIgnoreCase)) return audioType is "BGM" or "SE" ? audioType : audioType == "動画" ? "動画" : null;
+        if (new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff" }.Contains(extension, StringComparer.OrdinalIgnoreCase)) return audioType == "画像" ? "画像" : null;
         return null;
     }
 
@@ -2003,12 +2297,55 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             StatusMessage = "監視フォルダ内の素材は、監視フォルダから移動または削除するとライブラリから消えます";
             return;
         }
-        LibraryAssets.Remove(asset);
-        try { if (!string.IsNullOrWhiteSpace(asset.ThumbnailPath) && File.Exists(asset.ThumbnailPath)) File.Delete(asset.ThumbnailPath); } catch { }
+        RemoveLibraryAssets(new[] { asset });
         PresetStorage.SaveLibraryAssets(LibraryAssets);
         UpdateCategories();
         ApplyCategoryFilter();
         StatusMessage = $"「{asset.Name}」をライブラリから削除しました";
+    }
+
+    public void SetLibraryAssetCategory(LibraryAsset asset)
+    {
+        if (asset == null) return;
+        var metadata = PromptForLibraryMetadata(asset.Category ?? "", asset.Tags ?? "");
+        if (metadata == null) return;
+        string category = metadata.Value.Category.Trim();
+        string tags = metadata.Value.Tags.Trim();
+        if (category.Contains('/') || string.Equals(category, "全て", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "カテゴリ名が無効です";
+            return;
+        }
+        if (category.Length > 0 && !GetLibraryCategories(asset.Type).Contains(category, StringComparer.OrdinalIgnoreCase))
+            GetLibraryCategories(asset.Type).Add(category);
+        asset.Category = category;
+        asset.Tags = tags;
+        PresetStorage.SaveLibraryAssets(LibraryAssets);
+        SavePluginSettings();
+        UpdateCategories();
+        ApplyCategoryFilter();
+    }
+
+    private void RemoveLibraryAssets(IEnumerable<LibraryAsset> assets)
+    {
+        foreach (var asset in assets.ToList())
+        {
+            LibraryAssets.Remove(asset);
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(asset.ThumbnailPath) && File.Exists(asset.ThumbnailPath))
+                    File.Delete(asset.ThumbnailPath);
+            }
+            catch { }
+        }
+    }
+
+    private void PruneMissingLibraryAssets(bool save)
+    {
+        var missing = LibraryAssets.Where(asset => !File.Exists(asset.Path)).ToList();
+        if (missing.Count == 0) return;
+        RemoveLibraryAssets(missing);
+        if (save) PresetStorage.SaveLibraryAssets(LibraryAssets);
     }
 
     public void AddLibraryAssetToTimeline(LibraryAsset asset)
@@ -2018,7 +2355,47 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             StatusMessage = "素材ファイルが見つかりません";
             return;
         }
-        StatusMessage = PresetApplier.AddMediaFileToTimeline(asset.Path, asset.Type);
+        double volumePercent = GetLibraryVolumePercent(asset);
+        StatusMessage = PresetApplier.AddMediaFileToTimeline(asset.Path, asset.Type, volumePercent);
+    }
+
+    public void SetLibraryAssetVolume(LibraryAsset asset)
+    {
+        if (asset.Type == "画像") return;
+        var window = new Window
+        {
+            Title = $"{asset.Type}の個別音量",
+            Width = 430,
+            Height = 155,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = Application.Current?.MainWindow
+        };
+        var root = new DockPanel { Margin = new Thickness(16) };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancel = new Button { Content = "キャンセル", IsCancel = true, Width = 86, Margin = new Thickness(0, 10, 8, 0) };
+        var ok = new Button { Content = "適用", IsDefault = true, Width = 76, Margin = new Thickness(0, 10, 0, 0) };
+        buttons.Children.Add(cancel); buttons.Children.Add(ok); DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);
+        var row = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.Children.Add(new TextBlock { Text = "音量（YMM4準拠 %）", VerticalAlignment = VerticalAlignment.Center });
+        var input = new TextBox { Width = 70, Text = asset.VolumePercent.ToString("0.0", System.Globalization.CultureInfo.CurrentCulture), HorizontalContentAlignment = HorizontalAlignment.Right };
+        Grid.SetColumn(input, 1); row.Children.Add(input);
+        var slider = new Slider { Minimum = 0, Maximum = 400, Value = asset.VolumePercent, TickFrequency = 25, IsSnapToTickEnabled = false, Margin = new Thickness(0, 12, 10, 0) };
+        slider.ValueChanged += (_, _) => input.Text = slider.Value.ToString("0.0", System.Globalization.CultureInfo.CurrentCulture);
+        Grid.SetRow(slider, 1); row.Children.Add(slider);
+        input.TextChanged += (_, _) => { if (double.TryParse(input.Text, out var parsed)) slider.Value = Math.Clamp(parsed, 0, 400); };
+        ok.Click += (_, _) => { if (double.TryParse(input.Text, out var parsed)) { asset.VolumePercent = Math.Clamp(parsed, 0, 400); window.DialogResult = true; } };
+        root.Children.Add(row); window.Content = root;
+        if (window.ShowDialog() != true) return;
+        double value = asset.VolumePercent;
+        asset.VolumePercent = Math.Clamp(value, 0, 400);
+        asset.UseDefaultVolume = false;
+        PresetStorage.SaveLibraryAssets(LibraryAssets);
+        StatusMessage = $"「{asset.Name}」の個別音量を {asset.VolumePercent:0.0}% に設定しました";
     }
 
     public async Task SetLibraryThumbnailTimeAsync(LibraryAsset asset)
@@ -2048,7 +2425,9 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         var value = new System.Windows.Controls.TextBox { Width = 70, Text = asset.ThumbnailTimeSeconds.ToString("0.0", System.Globalization.CultureInfo.CurrentCulture), Margin = new Thickness(6, 0, 0, 0) };
         System.Windows.Controls.DockPanel.SetDock(value, System.Windows.Controls.Dock.Right);
         row.Children.Add(value);
-        var slider = new System.Windows.Controls.Slider { Minimum = 0, Maximum = 3600, Value = Math.Clamp(asset.ThumbnailTimeSeconds, 0, 3600), TickFrequency = 1 };
+        double duration = await ProbeMediaDurationAsync(asset.Path);
+        if (duration <= 0) duration = 3600;
+        var slider = new System.Windows.Controls.Slider { Minimum = 0, Maximum = duration, Value = Math.Clamp(asset.ThumbnailTimeSeconds, 0, duration), TickFrequency = 0.1 };
         row.Children.Add(slider);
         content.Children.Add(row);
         content.Children.Add(new System.Windows.Controls.TextBlock { Text = "秒", Margin = new Thickness(0, 4, 0, 0), Opacity = 0.75 });
@@ -2081,6 +2460,25 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         }
     }
 
+    private static async Task<double> ProbeMediaDurationAsync(string path)
+    {
+        var player = new MediaPlayer();
+        var opened = new TaskCompletionSource<double>();
+        player.MediaOpened += (_, _) => opened.TrySetResult(player.NaturalDuration.HasTimeSpan ? player.NaturalDuration.TimeSpan.TotalSeconds : 0);
+        player.MediaFailed += (_, _) => opened.TrySetResult(0);
+        try
+        {
+            player.Open(new Uri(path));
+            var completed = await Task.WhenAny(opened.Task, Task.Delay(2000));
+            return completed == opened.Task ? await opened.Task : 0;
+        }
+        catch { return 0; }
+        finally
+        {
+            try { player.Close(); } catch { }
+        }
+    }
+
     private void OpenPreviewStorageDirectory()
     {
         try
@@ -2106,9 +2504,14 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
             Multiselect = false
         };
         if (dialog.ShowDialog(Application.Current?.MainWindow) != true) return;
+        ApplyPreviewStorageDirectory(dialog.FolderName);
+    }
+
+    private void ApplyPreviewStorageDirectory(string selectedDirectory)
+    {
 
         string oldDirectory = Path.GetFullPath(PresetStorage.PreviewImageDirectory);
-        string newDirectory = Path.GetFullPath(dialog.FolderName);
+        string newDirectory = Path.GetFullPath(selectedDirectory);
         if (string.Equals(oldDirectory, newDirectory, StringComparison.OrdinalIgnoreCase)) return;
         if (IsSameOrNestedDirectory(oldDirectory, newDirectory) || IsSameOrNestedDirectory(newDirectory, oldDirectory))
         {
@@ -2304,6 +2707,8 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
                 pattern.PreviewVideoDurationSeconds = previewDuration;
                 pattern.ThumbnailTimeSeconds = Math.Min(pattern.ThumbnailTimeSeconds, Math.Max(0, previewDuration - 1.0 / generated.FPS));
                 if (dialog.RegenerateThumbnail) previewImage = generated.Thumbnail;
+                if (dialog.RegenerateThumbnail && previewImage == null && sourceItem != null)
+                    previewImage = await EffectPreviewVideoGenerator.GenerateThumbnailAsync(sourceItem, dialog.SelectedEffects, pattern.ThumbnailTimeSeconds);
             }
             else
             {
@@ -2488,9 +2893,34 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 
     private List<string> CurrentCategoryList => SelectedPresetTab switch { "FX" => _effectCategories, "TPL" => _templateCategories, _ => _textCategories };
 
+    private string GetSelectedLibraryType()
+    {
+        if (SelectedPresetTab == "LIB" && SelectedLibraryType != "全て") return NormalizeLibraryType(SelectedLibraryType);
+        if (SelectedCategory.Contains(" / ", StringComparison.Ordinal))
+            return NormalizeLibraryType(SelectedCategory[..SelectedCategory.IndexOf(" / ", StringComparison.Ordinal)]);
+        return NormalizeLibraryType(SelectedCategory);
+    }
+
     private void AddCategory()
     {
-        if (SelectedPresetTab == "LIB") return;
+        if (SelectedPresetTab == "LIB")
+        {
+            string type = GetSelectedLibraryType();
+            string? libraryName = PromptForCategory($"{type}に追加するカテゴリ名", "新しいカテゴリ");
+            if (string.IsNullOrWhiteSpace(libraryName)) return;
+            libraryName = libraryName.Trim();
+            var categories = GetLibraryCategories(type);
+            if (libraryName.Contains('/') || string.Equals(libraryName, "全て", StringComparison.OrdinalIgnoreCase) || categories.Contains(libraryName, StringComparer.OrdinalIgnoreCase))
+            {
+                StatusMessage = "カテゴリ名が無効か、すでに存在します";
+                return;
+            }
+            categories.Add(libraryName);
+            SavePluginSettings();
+            UpdateCategories();
+            ApplyCategoryFilter();
+            return;
+        }
         string? name = PromptForCategory("追加するカテゴリ名", "新しいカテゴリ");
         if (string.IsNullOrWhiteSpace(name)) return;
         name = name.Trim();
@@ -2508,7 +2938,25 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 
     private void RenameCategory(string? oldName)
     {
-        if (SelectedPresetTab == "LIB") return;
+        if (SelectedPresetTab == "LIB")
+        {
+            if (string.IsNullOrWhiteSpace(oldName) || oldName == "全て") return;
+            string type = GetSelectedLibraryType();
+            string oldCategory = oldName;
+            string? libraryName = PromptForCategory("新しいライブラリカテゴリ名", oldCategory)?.Trim();
+            if (string.IsNullOrWhiteSpace(libraryName)) return;
+            var categories = GetLibraryCategories(type);
+            if (libraryName.Contains('/') || categories.Any(value => !string.Equals(value, oldCategory, StringComparison.OrdinalIgnoreCase) && string.Equals(value, libraryName, StringComparison.OrdinalIgnoreCase))) return;
+            for (int i = 0; i < LibraryAssets.Count; i++)
+                if (string.Equals(LibraryAssets[i].Type, type, StringComparison.OrdinalIgnoreCase) && string.Equals(LibraryAssets[i].Category, oldCategory, StringComparison.OrdinalIgnoreCase)) LibraryAssets[i].Category = libraryName;
+            int libraryIndex = categories.FindIndex(value => string.Equals(value, oldCategory, StringComparison.OrdinalIgnoreCase));
+            if (libraryIndex >= 0) categories[libraryIndex] = libraryName;
+            PresetStorage.SaveLibraryAssets(LibraryAssets);
+            SavePluginSettings();
+            UpdateCategories();
+            ApplyCategoryFilter();
+            return;
+        }
         if (string.IsNullOrWhiteSpace(oldName) || oldName == "全て") return;
         string? name = PromptForCategory("新しいカテゴリ名", oldName);
         if (string.IsNullOrWhiteSpace(name)) return;
@@ -2534,7 +2982,20 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 
     private void DeleteCategory(string? name)
     {
-        if (SelectedPresetTab == "LIB") return;
+        if (SelectedPresetTab == "LIB")
+        {
+            if (string.IsNullOrWhiteSpace(name) || name == "全て") return;
+            string type = GetSelectedLibraryType();
+            string category = name;
+            if (MessageBox.Show($"カテゴリ「{name}」を削除しますか？素材からもカテゴリ名を外します。", "カテゴリ削除", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            GetLibraryCategories(type).RemoveAll(value => string.Equals(value, category, StringComparison.OrdinalIgnoreCase));
+            foreach (var asset in LibraryAssets.Where(asset => string.Equals(asset.Type, type, StringComparison.OrdinalIgnoreCase) && string.Equals(asset.Category, category, StringComparison.OrdinalIgnoreCase))) asset.Category = "";
+            PresetStorage.SaveLibraryAssets(LibraryAssets);
+            SavePluginSettings();
+            UpdateCategories();
+            ApplyCategoryFilter();
+            return;
+        }
         if (string.IsNullOrWhiteSpace(name) || name == "全て") return;
         if (MessageBox.Show($"カテゴリ「{name}」を削除しますか？このカテゴリが付いたプリセットからもカテゴリ名を外します。", "カテゴリ削除", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
 
@@ -2551,6 +3012,11 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 
     private void SaveCurrentCategories()
     {
+        if (SelectedPresetTab == "LIB")
+        {
+            SavePluginSettings();
+            return;
+        }
         if (SelectedPresetTab == "TPL")
             PresetStorage.SaveCategories(false, _templateCategories, forTemplates: true);
         else if (SelectedPresetTab == "FX")
@@ -2719,6 +3185,19 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
 
     private void DeleteSelectedPresets()
     {
+        if (SelectedPresetTab == "LIB")
+        {
+            var selectedAssets = LibraryAssets.Where(asset => asset.IsSelected).ToList();
+            if (selectedAssets.Count == 0) { StatusMessage = "削除する素材を選択してください"; return; }
+            if (MessageBox.Show($"選択した {selectedAssets.Count} 件の素材を削除しますか？", "選択素材の削除", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            RemoveLibraryAssets(selectedAssets);
+            PresetStorage.SaveLibraryAssets(LibraryAssets);
+            UpdateCategories();
+            ApplyCategoryFilter();
+            OnPropertyChanged(nameof(SelectedPresetCount));
+            StatusMessage = $"{selectedAssets.Count} 件の素材を削除しました";
+            return;
+        }
         var selected = _itemViewModelCache.Values.Where(item => item.IsSelected).ToList();
         if (selected.Count == 0)
         {
@@ -2767,6 +3246,51 @@ public class PreviewPresetViewModel : IToolViewModel, INotifyPropertyChanged
         ApplyCategoryFilter();
         OnPropertyChanged(nameof(SelectedPresetCount));
         StatusMessage = $"{selected.Count} 件のカテゴリを変更しました";
+    }
+
+    private void EditSelectedLibraryAssets()
+    {
+        if (SelectedPresetTab != "LIB") return;
+        var selected = LibraryAssets.Where(asset => asset.IsSelected).ToList();
+        if (selected.Count == 0) { StatusMessage = "編集する素材を選択してください"; return; }
+        var metadata = PromptForLibraryMetadata(selected[0].Category, selected[0].Tags);
+        if (metadata == null) return;
+        string category = metadata.Value.Category;
+        string tags = metadata.Value.Tags;
+        if (string.Equals(category, "全て", StringComparison.OrdinalIgnoreCase)) { StatusMessage = "カテゴリ名が無効です"; return; }
+        foreach (var asset in selected) asset.Category = category.Trim();
+        foreach (var asset in selected) asset.Tags = tags.Trim();
+        PresetStorage.SaveLibraryAssets(LibraryAssets);
+        UpdateCategories();
+        ApplyCategoryFilter();
+        StatusMessage = $"{selected.Count} 件の素材を編集しました";
+    }
+
+    private (string Category, string Tags)? PromptForLibraryMetadata(string initialCategory, string initialTags)
+    {
+        var window = new Window
+        {
+            Title = "素材のカテゴリ・タグを編集",
+            Width = 430,
+            Height = 205,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode = ResizeMode.NoResize,
+            Owner = Application.Current?.MainWindow
+        };
+        var category = new TextBox { Text = initialCategory ?? "", Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(5, 3, 5, 3) };
+        var tags = new TextBox { Text = initialTags ?? "", Margin = new Thickness(0, 0, 0, 12), Padding = new Thickness(5, 3, 5, 3), ToolTip = "カンマ区切り" };
+        var ok = new Button { Content = "適用", IsDefault = true, Width = 76, Margin = new Thickness(0, 0, 8, 0) };
+        var cancel = new Button { Content = "キャンセル", IsCancel = true, Width = 86 };
+        ok.Click += (_, _) => window.DialogResult = true;
+        var panel = new StackPanel { Margin = new Thickness(16) };
+        panel.Children.Add(new TextBlock { Text = "カテゴリ（空欄で未所属）", Margin = new Thickness(0, 0, 0, 3) });
+        panel.Children.Add(category);
+        panel.Children.Add(new TextBlock { Text = "タグ（カンマ区切り、空欄で削除）", Margin = new Thickness(0, 0, 0, 3) });
+        panel.Children.Add(tags);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(ok); buttons.Children.Add(cancel); panel.Children.Add(buttons);
+        window.Content = panel;
+        return window.ShowDialog() == true ? (category.Text.Trim(), tags.Text.Trim()) : null;
     }
 
     private void ExportPreset(TextPresetItemViewModel? itemVM)

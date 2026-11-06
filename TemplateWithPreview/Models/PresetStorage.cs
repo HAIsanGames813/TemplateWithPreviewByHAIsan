@@ -36,6 +36,7 @@ public static class PresetStorage
     private static readonly string PluginSettingsPath = Path.Combine(StorageDirectory, "settings.json");
     private static readonly string LibraryAssetsPath = Path.Combine(StorageDirectory, "library-assets.json");
     public static string LibraryThumbnailDirectory => Path.Combine(StorageDirectory, "LibraryThumbnails");
+    public static string LibraryVideoCacheDirectory => Path.Combine(StorageDirectory, "LibraryVideoCache");
     private static string? _customPreviewDirectory = LoadPreviewDirectorySetting();
 
     static PresetStorage() => MigrateLegacyStorage();
@@ -108,6 +109,12 @@ public static class PresetStorage
         using var stream = File.Create(path);
         encoder.Save(stream);
         return path;
+    }
+
+    public static string GetLibraryVideoCachePath(string cacheKey)
+    {
+        Directory.CreateDirectory(LibraryVideoCacheDirectory);
+        return Path.Combine(LibraryVideoCacheDirectory, $"{cacheKey}.mp4");
     }
 
     public static void SavePreviewGenerationCheckpoint(PreviewGenerationCheckpoint checkpoint)

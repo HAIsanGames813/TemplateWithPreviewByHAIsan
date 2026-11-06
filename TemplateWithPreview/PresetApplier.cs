@@ -173,8 +173,11 @@ public static class PresetApplier
             var template = ctor.Invoke(args);
             var add = model.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance).FirstOrDefault(m => m.Name == "AddTemplateItemAsync");
             if (add == null) return "YMM4のテンプレート適用APIが見つかりません";
+            int currentFrame = timeline.CurrentFrame;
+            int selectedLayer = timeline.SelectedItem?.Layer ?? 0;
+            bool assignedFrame = false;
             var callArgs = add.GetParameters().Select(p => p.ParameterType == typeof(int)
-                ? (object)(p.Name?.Contains("frame", StringComparison.OrdinalIgnoreCase) == true ? timeline.CurrentFrame : (timeline.SelectedItem?.Layer ?? 0))
+                ? (object)GetTimelineIntArgument(p, currentFrame, selectedLayer, ref assignedFrame)
                 : p.ParameterType.IsInstanceOfType(template) ? template
                 : p.HasDefaultValue ? p.DefaultValue : (p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null)).ToArray();
             var task = add.Invoke(model, callArgs) as Task;
@@ -184,7 +187,7 @@ public static class PresetApplier
         catch (Exception ex) { Debug.WriteLine($"[PresetApplier] ApplyItemTemplateToSelected failed: {ex}"); return $"テンプレート適用に失敗しました: {ex.GetBaseException().Message}"; }
     }
 
-    public static string AddMediaFileToTimeline(string path, string assetType)
+    public static string AddMediaFileToTimeline(string path, string assetType, double volumePercent = 100)
     {
         try
         {
@@ -194,8 +197,11 @@ public static class PresetApplier
                 .FirstOrDefault(type => type != null && typeof(IItem).IsAssignableFrom(type))
                 ?? throw new InvalidOperationException($"YMM4の{typeName}型が見つかりません");
 
-            IItem? item = null;
-            foreach (var constructor in itemType.GetConstructors().OrderBy(constructor => constructor.GetParameters().Length))
+            IItem? item = CreateDefaultMediaItem(typeName, path);
+            foreach (var constructor in item == null ? itemType.GetConstructors()
+                .OrderByDescending(constructor => constructor.GetParameters().Any(parameter => parameter.ParameterType == typeof(string) &&
+                    (parameter.Name?.Contains("path", StringComparison.OrdinalIgnoreCase) == true || parameter.Name?.Contains("file", StringComparison.OrdinalIgnoreCase) == true || parameter.Name?.Contains("source", StringComparison.OrdinalIgnoreCase) == true)))
+                .ThenBy(constructor => constructor.GetParameters().Length) : Enumerable.Empty<ConstructorInfo>())
             {
                 try
                 {
@@ -231,6 +237,17 @@ public static class PresetApplier
             if (item == null && Activator.CreateInstance(itemType) is IItem defaultItem && TrySetMediaPath(defaultItem, path))
                 item = defaultItem;
             if (item == null) throw new InvalidOperationException($"{typeName}にファイルパスを設定できませんでした");
+            if (assetType == "画像")
+            {
+                int defaultLength = GetDefaultImageItemLength();
+                if (defaultLength > 0) SetItemLengthFrames(item, defaultLength);
+            }
+            else if (assetType is "BGM" or "SE" or "動画")
+            {
+                double durationSeconds = ProbeMediaDurationSeconds(path);
+                if (durationSeconds > 0) SetItemLength(item, durationSeconds, GetTimelineFps());
+                TrySetVolumePercent(item, volumePercent);
+            }
             return ApplyItemTemplateToSelected(Path.GetFileNameWithoutExtension(path), new[] { item });
         }
         catch (Exception ex)
@@ -238,6 +255,196 @@ public static class PresetApplier
             Debug.WriteLine($"[PresetApplier] AddMediaFileToTimeline failed: {ex}");
             return $"素材をタイムラインに追加できませんでした: {ex.GetBaseException().Message}";
         }
+    }
+
+    private static void SetItemLength(IItem item, double durationSeconds, double fps)
+    {
+        var property = item.GetType().GetProperty("Length", BindingFlags.Public | BindingFlags.Instance);
+        if (property?.CanWrite != true) return;
+        int frames = Math.Max(1, (int)Math.Ceiling(durationSeconds * fps));
+        SetItemLengthFrames(item, frames, property);
+    }
+
+    private static IItem? CreateDefaultMediaItem(string typeName, string path)
+    {
+        try
+        {
+            var settingsType = AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(assembly => { try { return assembly.GetTypes(); } catch { return Array.Empty<Type>(); } })
+                .FirstOrDefault(type => type.FullName == "YukkuriMovieMaker.Settings.ItemSettings");
+            var settingsBase = AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(assembly => { try { return assembly.GetTypes(); } catch { return Array.Empty<Type>(); } })
+                .FirstOrDefault(type => type.IsGenericTypeDefinition && type.Name.StartsWith("SettingsBase`", StringComparison.Ordinal));
+            if (settingsType == null || settingsBase == null) return null;
+            var settings = settingsBase.MakeGenericType(settingsType)
+                .GetProperty("Default", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            var defaults = settings?.GetType().GetProperty("DefaultItems", BindingFlags.Public | BindingFlags.Instance)?.GetValue(settings);
+            var defaultItem = defaults?.GetType().GetProperty(typeName, BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaults) as IItem;
+            if (defaultItem == null) return null;
+            var clone = defaultItem.GetClone();
+            return TrySetMediaPath(clone, path) ? clone : null;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[PresetApplier] Could not clone YMM4 default {typeName}: {ex}");
+            return null;
+        }
+    }
+
+    private static void SetItemLengthFrames(IItem item, int frames, PropertyInfo? knownProperty = null)
+    {
+        var property = knownProperty ?? item.GetType().GetProperty("Length", BindingFlags.Public | BindingFlags.Instance);
+        if (property?.CanWrite != true) return;
+        frames = Math.Max(1, frames);
+        if (property.PropertyType == typeof(int)) property.SetValue(item, frames);
+        else if (TryConvertNumber(frames, property.PropertyType, out var converted)) property.SetValue(item, converted);
+    }
+
+    private static int GetDefaultImageItemLength()
+    {
+        try
+        {
+            var settingsType = AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(assembly => { try { return assembly.GetTypes(); } catch { return Array.Empty<Type>(); } })
+                .FirstOrDefault(type => type.FullName == "YukkuriMovieMaker.Settings.ItemSettings");
+            var settingsBase = AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(assembly => { try { return assembly.GetTypes(); } catch { return Array.Empty<Type>(); } })
+                .FirstOrDefault(type => type.IsGenericTypeDefinition && type.Name.StartsWith("SettingsBase`", StringComparison.Ordinal));
+            if (settingsType == null || settingsBase == null) return 0;
+            var defaultSettings = settingsBase.MakeGenericType(settingsType)
+                .GetProperty("Default", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            var defaultItems = defaultSettings?.GetType().GetProperty("DefaultItems", BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaultSettings);
+            var imageItem = defaultItems?.GetType().GetProperty("ImageItem", BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaultItems);
+            var length = imageItem?.GetType().GetProperty("Length", BindingFlags.Public | BindingFlags.Instance)?.GetValue(imageItem);
+            return length is IConvertible convertible ? convertible.ToInt32(System.Globalization.CultureInfo.InvariantCulture) : 0;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[PresetApplier] Could not read YMM4 default ImageItem length: {ex}");
+            return 0;
+        }
+    }
+
+    private static double GetTimelineFps()
+    {
+        try
+        {
+            var info = GetActiveTimeline()?.VideoInfo;
+            if (info == null) return 30;
+            foreach (string name in new[] { "FPS", "FrameRate", "Framerate" })
+            {
+                object? value = info.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance)?.GetValue(info);
+                if (value is double d && d > 0) return d;
+                if (value is float f && f > 0) return f;
+                if (value is int i && i > 0) return i;
+            }
+            var numerator = info.GetType().GetProperty("FrameRateNumerator")?.GetValue(info) as IConvertible;
+            var denominator = info.GetType().GetProperty("FrameRateDenominator")?.GetValue(info) as IConvertible;
+            if (numerator != null && denominator != null && denominator.ToDouble(null) > 0) return numerator.ToDouble(null) / denominator.ToDouble(null);
+        }
+        catch { }
+        return 30;
+    }
+
+    private static double ProbeMediaDurationSeconds(string path)
+    {
+        string ffprobe = Path.Combine(Environment.GetEnvironmentVariable("YMM4DirPath") ?? @"C:\Users\ADMIN\YukkuriMovieMaker_v4_Lite", "Resources", "bin", "x64", "ffmpeg", "ffprobe.exe");
+        if (!File.Exists(ffprobe)) return 0;
+        try
+        {
+            var start = new ProcessStartInfo(ffprobe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            start.ArgumentList.Add("-v"); start.ArgumentList.Add("error"); start.ArgumentList.Add("-show_entries"); start.ArgumentList.Add("format=duration"); start.ArgumentList.Add("-of"); start.ArgumentList.Add("default=noprint_wrappers=1:nokey=1"); start.ArgumentList.Add(path);
+            using var process = Process.Start(start);
+            if (process == null) return 0;
+            string output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            return double.TryParse(output.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double duration) ? duration : 0;
+        }
+        catch { return 0; }
+    }
+
+    private static int GetTimelineIntArgument(ParameterInfo parameter, int currentFrame, int selectedLayer, ref bool assignedFrame)
+    {
+        string name = parameter.Name ?? "";
+        if (name.Contains("layer", StringComparison.OrdinalIgnoreCase)) return selectedLayer;
+        if (name.Contains("frame", StringComparison.OrdinalIgnoreCase) || name.Contains("start", StringComparison.OrdinalIgnoreCase) || name.Contains("position", StringComparison.OrdinalIgnoreCase))
+        {
+            assignedFrame = true;
+            return currentFrame;
+        }
+        if (!assignedFrame)
+        {
+            assignedFrame = true;
+            return currentFrame;
+        }
+        return selectedLayer;
+    }
+
+    private static bool TrySetVolumePercent(IItem item, double volumePercent)
+    {
+        foreach (var property in item.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (!property.Name.Contains("Volume", StringComparison.OrdinalIgnoreCase) && !property.Name.Contains("Gain", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                if (TrySetNumericProperty(property, item, volumePercent)) return true;
+                object? holder = property.GetValue(item);
+                volumePercent = ClampToParameterRange(holder, volumePercent);
+                var valueProperty = holder?.GetType().GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
+                if (valueProperty?.CanWrite == true && TryConvertNumber(volumePercent, valueProperty.PropertyType, out var converted))
+                {
+                    valueProperty.SetValue(holder, converted);
+                    return true;
+                }
+            }
+            catch { }
+        }
+        return false;
+    }
+
+    private static double ClampToParameterRange(object? holder, double value)
+    {
+        if (holder == null) return value;
+        double minimum = GetNumericProperty(holder, "Min", "Minimum") ?? 0;
+        double maximum = GetNumericProperty(holder, "Max", "Maximum") ?? 400;
+        return Math.Clamp(value, Math.Min(minimum, maximum), Math.Max(minimum, maximum));
+    }
+
+    private static double? GetNumericProperty(object target, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            try
+            {
+                object? value = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance)?.GetValue(target);
+                if (value != null && double.TryParse(value.ToString(), out double result)) return result;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static bool TrySetNumericProperty(PropertyInfo property, object target, double value)
+    {
+        if (!property.CanWrite || !TryConvertNumber(value, property.PropertyType, out var converted)) return false;
+        property.SetValue(target, converted);
+        return true;
+    }
+
+    private static bool TryConvertNumber(double value, Type type, out object? converted)
+    {
+        try
+        {
+            Type actual = Nullable.GetUnderlyingType(type) ?? type;
+            if (actual == typeof(double)) converted = value;
+            else if (actual == typeof(float)) converted = (float)value;
+            else if (actual == typeof(decimal)) converted = (decimal)value;
+            else if (actual == typeof(int)) converted = (int)Math.Round(value);
+            else if (actual == typeof(long)) converted = (long)Math.Round(value);
+            else { converted = null; return false; }
+            return true;
+        }
+        catch { converted = null; return false; }
     }
 
     private static bool TrySetMediaPath(IItem item, string path)

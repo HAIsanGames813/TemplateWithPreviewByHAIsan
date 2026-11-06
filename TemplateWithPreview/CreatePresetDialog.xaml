@@ -9,7 +9,8 @@
         Height="570" Width="470"
         MinWidth="380" MinHeight="400"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="CanResizeWithGrip">
+        ResizeMode="CanResizeWithGrip"
+        Style="{DynamicResource {x:Type Window}}">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -51,8 +52,8 @@
                             <WrapPanel x:Name="CategoryQuickButtons" Margin="0,3,0,0" />
                         </StackPanel>
 
-                        <StackPanel Margin="0,8,0,0">
-                            <TextBlock Text="タグ (カンマ区切り)" FontSize="11" Opacity="0.8" Margin="0,0,0,3" />
+                        <StackPanel x:Name="PanelTags" Margin="0,8,0,0">
+                            <TextBlock Text="タグ" FontSize="11" Opacity="0.8" Margin="0,0,0,3" />
                             <TextBox x:Name="TextTags" Padding="6,4" FontSize="12" ToolTip="例: 感情, 赤系" />
                             <WrapPanel x:Name="TagQuickButtons" Margin="0,3,0,0" />
                         </StackPanel>
@@ -73,9 +74,9 @@
                         <ymmc:ColorPicker x:Name="ColorPickerControl" Width="160" Height="28" HorizontalAlignment="Left" />
                         <TextBlock Text="色取得を開始するエフェクト (0:自動判定)" FontSize="11" Opacity="0.8" Margin="0,8,0,2" />
                         <DockPanel LastChildFill="True">
-                            <TextBlock x:Name="AutoColorStartEffectValue" Text="0" Width="30" TextAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" DockPanel.Dock="Right" />
-                            <Slider x:Name="AutoColorStartEffectSlider" Minimum="0" Maximum="10" TickFrequency="1" IsSnapToTickEnabled="True"
-                                    Value="0" ToolTip="0は文字色などから自動判定し、1〜10は指定した番号のエフェクトから順に色を取得します" />
+                            <ymmc:TextBoxSlider x:Name="AutoColorStartEffectSlider" Min="0" Max="10" DefaultMin="0" DefaultMax="10"
+                                                Value="0" Unit="" IsUnitVisible="False" StringFormat="F0" Delta="1"
+                                                ToolTip="0は文字色などから自動判定し、1〜10は指定した番号のエフェクトから順に色を取得します" />
                         </DockPanel>
                     </StackPanel>
                 </GroupBox>
